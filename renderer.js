@@ -3499,10 +3499,11 @@
         drawerPagesList.innerHTML = pages.slice(0, 8).map(function (pg) {
           const slug = pg.slug || '';
           const authorTag = pg.author ? (' · ' + pg.author) : '';
+          const countNum = pg.itemCount || pg.count || 0;
           return (
             '<a class="drawer-page-chip" href="/p/' + escHtml(encodeURIComponent(slug)) + '" data-open-page-slug="' + escHtml(slug) + '">' +
               '<strong>' + escHtml(pg.title || slug) + '</strong>' +
-              '<small>' + escHtml((pg.itemCount || 0) + ' 件风物' + authorTag) + '</small>' +
+              '<small>' + escHtml(countNum + ' 件风物' + authorTag) + '</small>' +
             '</a>'
           );
         }).join('');
@@ -3558,7 +3559,7 @@
   }
 
   function isVisualItem(it) {
-    return Boolean(it && it.kind !== 'quote' && (it.fullUrl || it.previewUrl || it.thumbUrl));
+    return Boolean(it && it.kind !== 'quote' && it.kind !== 'wiki' && (it.fullUrl || it.previewUrl || it.thumbUrl));
   }
 
   function getDomainForItem(it) {
@@ -3790,7 +3791,7 @@
 
   function attachFilmstripImgFallbacks(containerEl, listRef) {
     if (!containerEl) return;
-    containerEl.querySelectorAll('.sc-film-btn img').forEach(function (imgEl, idx) {
+    containerEl.querySelectorAll('.sc-film-btn img').forEach(function (imgEl) {
       if (imgEl._boundFilmErr) return;
       imgEl._boundFilmErr = true;
       let retriedRaw = false;
@@ -3800,6 +3801,8 @@
           retriedRaw = true;
           imgEl.src = raw;
         } else {
+          const btn = imgEl.closest('[data-film-idx]');
+          const idx = btn ? (parseInt(btn.getAttribute('data-film-idx'), 10) || 0) : 0;
           const itemObj = listRef[idx] || showcaseState.items[idx];
           imgEl.src = SP.buildThumbDataURL(itemObj || { title: pad2(idx + 1) }, 160);
         }
@@ -3812,6 +3815,22 @@
     const list = showcaseState.items.slice(0, 40);
     containerEl.innerHTML = list.map(function (it, idx) {
       const isAct = idx === showcaseState.index;
+      if (it && it.kind === 'quote') {
+        const qShort = String(it.shortTitle || it.title || '拾句').replace(/<br>/g, '').slice(0, 8);
+        return (
+          '<button type="button" class="sc-film-btn is-text-tile' + (isAct ? ' active' : '') + '" role="option" aria-selected="' + (isAct ? 'true' : 'false') + '" data-film-idx="' + idx + '" title="' + escHtml(it.quote || it.title || '') + '">' +
+            '<span class="sc-film-txt">✦ ' + escHtml(qShort) + '</span>' +
+          '</button>'
+        );
+      }
+      if (it && it.kind === 'wiki') {
+        const wShort = String(it.title || '百科').slice(0, 8);
+        return (
+          '<button type="button" class="sc-film-btn is-text-tile is-wiki-tile' + (isAct ? ' active' : '') + '" role="option" aria-selected="' + (isAct ? 'true' : 'false') + '" data-film-idx="' + idx + '" title="' + escHtml('知识切片 · ' + (it.title || '')) + '">' +
+            '<span class="sc-film-txt">WIKI<br>' + escHtml(wShort) + '</span>' +
+          '</button>'
+        );
+      }
       const rawThumb = (it && (it.thumbUrl || it.previewUrl || it.fullUrl)) || '';
       const thumbSrc = rawThumb
         ? resolveImgUrl(rawThumb)
@@ -3835,32 +3854,94 @@
     });
   }
 
-  // ==================== 模式 1：时代 / 文明 / 国家 / 自然纪实 瀑布流滚动长卷 ====================
+  // ==================== 模式 1：时代 / 文明 / 国家 / 混合珍珠叙事流 瀑布长卷 ====================
   function buildGalleryCardsHtml(itemsList, offsetIdx) {
     return itemsList.map(function (it, localIdx) {
       const absIdx = offsetIdx + localIdx;
+      const fableNote = String((it && it.fableCaption) || '').trim();
+      const noteHtml = fableNote
+        ? '<div class="sc-fable-caption"><span class="sc-fc-mark">✦ 串词手记</span><p>' + escHtml(fableNote) + '</p></div>'
+        : '';
+
+      // A. 维基百科知识切片卡（编辑部羊皮纸知识模块）
+      if (it && it.kind === 'wiki') {
+        const rawFig = it.previewUrl || it.thumbUrl || '';
+        const figSrc = rawFig ? resolveImgUrl(rawFig) : '';
+        const extractParas = String(it.wikiExtract || it.story || '')
+          .split(/\n{2,}/)
+          .map(function (s) { return s.trim(); })
+          .filter(Boolean)
+          .slice(0, 2);
+        const extractHtml = extractParas.map(function (p) {
+          return '<p class="sc-wiki-extract-p">' + escHtml(p) + '</p>';
+        }).join('');
+        return (
+          '<article class="sc-gal-card is-wiki-card' + (fableNote ? ' has-fable-caption' : '') + '" data-gal-idx="' + absIdx + '">' +
+            '<div class="sc-wiki-slice">' +
+              '<div class="sc-wiki-slice-top">' +
+                '<span class="sc-wiki-kicker">WIKIPEDIA SLICE · 知识切片</span>' +
+                '<span class="sc-wiki-cta">展开并排深读 →</span>' +
+              '</div>' +
+              '<div class="sc-wiki-slice-grid' + (figSrc ? ' has-fig' : '') + '">' +
+                '<div class="sc-wiki-slice-copy">' +
+                  '<h3 class="sc-gal-card-title">' + escHtml(it.title || '') + '</h3>' +
+                  (it.enTitle ? '<div class="sc-gal-card-en">' + escHtml(it.enTitle) + '</div>' : '') +
+                  '<div class="sc-wiki-extract">' + extractHtml + '</div>' +
+                '</div>' +
+                (figSrc ? '<img class="sc-wiki-mini-fig" src="' + escHtml(figSrc) + '" data-raw-src="' + escHtml(rawFig) + '" alt="' + escHtml(it.title || '') + '" loading="lazy" decoding="async">' : '') +
+              '</div>' +
+              noteHtml +
+            '</div>' +
+          '</article>'
+        );
+      }
+
+      // B. 幕间拾句转场卡
+      if (it && it.kind === 'quote') {
+        const qTxt = it.quote || it.title || '';
+        return (
+          '<article class="sc-gal-card is-quote-card' + (fableNote ? ' has-fable-caption' : '') + '" data-gal-idx="' + absIdx + '">' +
+            '<div class="sc-quote-slice">' +
+              '<span class="sc-quote-kicker">' + escHtml(it.enTitle || 'CURATORIAL INTERLUDE · 幕间拾句') + '</span>' +
+              '<blockquote class="sc-quote-text">“' + escHtml(qTxt) + '”</blockquote>' +
+              (it.subtitle ? '<div class="sc-quote-sub">' + escHtml(it.subtitle) + '</div>' : '') +
+              noteHtml +
+            '</div>' +
+          '</article>'
+        );
+      }
+
+      // C. 馆藏名作 / 自然科学微距 / 深空摄影珍珠卡（首屏第 1 张提升 LCP 优先级，其余标准懒加载）
       const rawPreview = (it && (it.previewUrl || it.thumbUrl || it.fullUrl)) || '';
       const imgSrc = isVisualItem(it)
         ? resolveImgUrl(rawPreview)
         : SP.buildThumbDataURL(it, 420);
-      const tagStr = it.civilization || (getDomainForItem(it) === 'landscape' ? '4K HORIZON' : 'MUSEUM 4K');
+      const resBadge = (it && it.resBadge) || 'HD';
+      const srcLabel = (it && (it.sourceName || it.civilization)) || (getDomainForItem(it) === 'landscape' ? 'HORIZON' : 'MUSEUM');
+      const tagStr = srcLabel + ' · ' + resBadge;
+      const fullBtnLabel = resBadge === '4K' ? '⛶ 4K' : '⛶ 原图';
       const enLine = (it.enTitle && it.enTitle !== it.title) ? it.enTitle : (it.subtitle || '');
-      const descText = it.story || it.quote || '';
+      const rawStory = (it.story && it.story !== fableNote) ? it.story : '';
       const fav = isItemFavorited(it.id);
+      const imgPriorityAttrs = absIdx === 0
+        ? 'fetchpriority="high" decoding="async"'
+        : 'loading="lazy" decoding="async"';
+
       return (
-        '<article class="sc-gal-card" data-gal-idx="' + absIdx + '">' +
+        '<article class="sc-gal-card' + (fableNote ? ' has-fable-caption' : '') + '" data-gal-idx="' + absIdx + '">' +
           '<div class="sc-gal-media">' +
-            '<img src="' + escHtml(imgSrc) + '" data-raw-src="' + escHtml(rawPreview) + '" alt="' + escHtml(it.title || '') + '" loading="lazy" decoding="async">' +
+            '<img src="' + escHtml(imgSrc) + '" data-raw-src="' + escHtml(rawPreview) + '" alt="' + escHtml(it.title || '') + '" ' + imgPriorityAttrs + '>' +
             '<span class="sc-gal-badge">' + escHtml(tagStr) + '</span>' +
             '<button type="button" class="sc-gal-fav-btn fav-heart-btn' + (fav ? ' is-fav' : '') + '" data-fav-idx="' + absIdx + '" data-fav-id="' + escHtml(it.id || '') + '" aria-label="收藏画作" aria-pressed="' + (fav ? 'true' : 'false') + '" title="点心收藏">' +
               '<span class="fav-heart-glyph" aria-hidden="true">' + (fav ? '♥' : '♡') + '</span>' +
             '</button>' +
-            '<button type="button" class="sc-gal-full-btn" data-gal-stage="' + absIdx + '" title="纯享全屏 4K 打开">⛶ 4K</button>' +
+            '<button type="button" class="sc-gal-full-btn" data-gal-stage="' + absIdx + '" title="纯享全屏查看原图">' + fullBtnLabel + '</button>' +
           '</div>' +
           '<div class="sc-gal-body">' +
             '<h3 class="sc-gal-card-title">' + escHtml(it.title || '') + '</h3>' +
             (enLine ? '<div class="sc-gal-card-en">' + escHtml(enLine) + '</div>' : '') +
-            (descText ? '<p class="sc-gal-card-desc">' + escHtml(descText) + '</p>' : '') +
+            noteHtml +
+            (rawStory ? '<p class="sc-gal-card-desc">' + escHtml(rawStory) + '</p>' : '') +
           '</div>' +
         '</article>'
       );
@@ -3877,7 +3958,7 @@
         scGalEyebrow.textContent = showcaseState.eyebrow || 'CURATED TOPIC STREAM';
       } else {
         scGalEyebrow.textContent = showcaseState.domain === 'landscape'
-          ? 'NATURE, MACRO & COSMOS · 4K STREAM'
+          ? 'NATURE, MACRO & COSMOS · STREAM'
           : 'WORLD MUSEUM · ERA & CIVILIZATION STREAM';
       }
     }
@@ -3891,8 +3972,10 @@
         scGalSub.textContent = count
           ? ('已收藏 ' + count + ' 件风物 · 点右上角 ♥ 可取消收藏，点击画面进入「图文并排 · Wiki」。')
           : '画匣还是空的 · 浏览馆藏或自然摄影时点右上角 ♡，即可把喜欢的画作收进这里。';
+      } else if (showcaseState.isCuratedPage) {
+        scGalSub.textContent = '共串联 ' + count + ' 枚专题切片 · 点 ♡ 可收入私藏画匣，点击任意画作或知识卡即入「图文并排 · Wiki」深读全章。';
       } else {
-        scGalSub.textContent = '已展开 ' + count + ' 件高清原片 · 点右上角 ♡ 收入画匣，点画面即入「图文并排 · Wiki」深读全章。';
+        scGalSub.textContent = '已展开 ' + count + ' 件精选原片 · 点右上角 ♡ 收入画匣，点画面即入「图文并排 · Wiki」深读全章。';
       }
     }
     if (scCuratorBanner) {
@@ -4101,6 +4184,10 @@
     renderFacetPills();
 
     const hasVisual = isVisualItem(it);
+    if (scSplitFitBtn) scSplitFitBtn.hidden = !hasVisual;
+    if (scSplitResetZoomBtn) scSplitResetZoomBtn.hidden = !hasVisual;
+    if (scSplitToFullBtn) scSplitToFullBtn.hidden = !hasVisual;
+
     if (scSplitImg) {
       scSplitImg.hidden = !hasVisual;
       if (hasVisual) {
@@ -4111,9 +4198,25 @@
     if (scSplitQuoteCard) {
       scSplitQuoteCard.hidden = hasVisual;
       if (!hasVisual) {
-        if (scSqKicker) scSqKicker.textContent = (it.channel || 'LITERARY FOLIO').toUpperCase();
-        if (scSqQuote) scSqQuote.textContent = '“' + (it.quote || it.story || it.title || '') + '”';
-        if (scSqSub) scSqSub.textContent = it.subtitle || it.title || '';
+        if (it.kind === 'wiki') {
+          if (scSqKicker) scSqKicker.textContent = 'WIKIPEDIA KNOWLEDGE SLICE · 知识切片';
+          if (scSqQuote) {
+            scSqQuote.textContent = it.wikiExtract || it.story || it.title || '';
+            scSqQuote.classList.add('is-wiki-extract');
+          }
+          if (scSqSub) scSqSub.textContent = it.fableCaption ? ('✦ ' + it.fableCaption) : (it.subtitle || '');
+        } else {
+          if (scSqKicker) scSqKicker.textContent = (it.enTitle || it.channel || 'LITERARY FOLIO').toUpperCase();
+          if (scSqQuote) {
+            scSqQuote.textContent = '“' + (it.quote || it.story || it.title || '') + '”';
+            scSqQuote.classList.remove('is-wiki-extract');
+          }
+          if (scSqSub) {
+            scSqSub.textContent = it.fableCaption
+              ? ((it.subtitle ? it.subtitle + ' · ' : '') + '✦ ' + it.fableCaption)
+              : (it.subtitle || it.title || '');
+          }
+        }
       }
     }
 
@@ -4184,7 +4287,8 @@
     }
 
     if (scCapTag) {
-      scCapTag.textContent = it.civilization || (showcaseState.domain === 'landscape' ? 'EARTH & COSMOS 4K' : 'OPEN ACCESS MUSEUM 4K');
+      const baseSrc = it.sourceName || it.civilization || (showcaseState.domain === 'landscape' ? 'EARTH & COSMOS' : 'OPEN ACCESS MUSEUM');
+      scCapTag.textContent = [baseSrc, it.resBadge || 'HD'].filter(Boolean).join(' · ');
     }
     if (scMapLink) {
       if (it.mapUrl) {
@@ -4196,7 +4300,11 @@
     }
     if (scCapTitle) scCapTitle.textContent = it.title || '';
     if (scCapSub) scCapSub.textContent = (it.enTitle ? (it.enTitle + ' · ') : '') + (it.subtitle || '');
-    const storyTxt = it.story || it.quote || '';
+    const fableNote = String(it.fableCaption || '').trim();
+    const rawStory = String(it.story || it.quote || '').trim();
+    const storyTxt = fableNote
+      ? ('✦ ' + fableNote + (rawStory && rawStory !== fableNote ? ' — ' + rawStory : ''))
+      : rawStory;
     if (scCapStory) scCapStory.textContent = storyTxt;
     const pills = [].concat(it.meta || [], (it.tags || []).slice(0, 3)).filter(Boolean).slice(0, 5);
     if (scCapMeta) {
@@ -4450,14 +4558,18 @@
     const fbTopic = (!appendToTrail && activeItem)
       ? String(activeItem.wikiFallback || (activeItem.relatedSeeds && activeItem.relatedSeeds[0]) || activeItem.civilization || '').trim()
       : '';
-    const clientCacheKey = fbTopic ? (cleanTopic + '::' + fbTopic) : cleanTopic;
+    const qidTopic = (!appendToTrail && activeItem && activeItem.wikidataQid)
+      ? String(activeItem.wikidataQid).trim()
+      : '';
+    const clientCacheKey = [cleanTopic, fbTopic, qidTopic].filter(Boolean).join('::');
 
     let data = wikiClientCache[clientCacheKey] || null;
     if (!data) {
       try {
         if (isHttpServer) {
           const fbParam = (fbTopic && fbTopic !== cleanTopic) ? ('&fallback=' + encodeURIComponent(fbTopic)) : '';
-          const resp = await fetch('/api/wiki?title=' + encodeURIComponent(cleanTopic) + '&lang=zh' + fbParam);
+          const qidParam = qidTopic ? ('&qid=' + encodeURIComponent(qidTopic)) : '';
+          const resp = await fetch('/api/wiki?title=' + encodeURIComponent(cleanTopic) + '&lang=zh' + fbParam + qidParam);
           if (resp.ok) data = await resp.json();
         } else {
           data = await fetchWikiDirectFallback(cleanTopic);
@@ -4561,12 +4673,19 @@
         return '<button type="button" class="dos-topic-chip" data-wiki-topic="' + escHtml(sd) + '">' + escHtml(sd) + '</button>';
       }).join('');
 
+      const fableNote = String(it.fableCaption || '').trim();
+      const leadStory = (it.story && it.story !== fableNote) ? it.story : '';
+      const kickerLabel = it.sourceName
+        ? (it.sourceName + (it.resBadge && it.resBadge !== 'WIKI' && it.resBadge !== 'QUOTE' ? (' · ' + it.resBadge) : ''))
+        : (it.civilization || it.channel || 'CURATED DOSSIER');
+
       dosLead.innerHTML =
-        '<div class="dos-lead-kicker">' + escHtml((it.civilization || it.channel || 'CURATED DOSSIER').toUpperCase()) + '</div>' +
+        '<div class="dos-lead-kicker">' + escHtml(String(kickerLabel).toUpperCase()) + '</div>' +
         '<h1 class="dos-lead-title">' + escHtml(it.title || '') + '</h1>' +
         ((it.enTitle || it.subtitle) ? '<div class="dos-lead-sub">' + escHtml([it.enTitle, it.subtitle].filter(Boolean).join(' · ')) + '</div>' : '') +
+        (fableNote ? '<div class="dos-fable-note"><span class="dos-fn-tag">✦ 策展手记</span><p>' + escHtml(fableNote) + '</p></div>' : '') +
         (it.quote ? '<blockquote class="dos-lead-quote">“' + escHtml(it.quote) + '”</blockquote>' : '') +
-        (it.story ? '<p class="dos-lead-story">' + escHtml(it.story) + '</p>' : '') +
+        (leadStory ? '<p class="dos-lead-story">' + escHtml(leadStory) + '</p>' : '') +
         (seedBtns ? '<div class="dos-lead-seeds"><span class="dos-seed-label">延伸词条秒切：</span>' + seedBtns + '</div>' : '');
     }
 

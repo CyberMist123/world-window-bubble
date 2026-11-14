@@ -1,31 +1,37 @@
 # 世界之窗 · 漫游画册（World Window · Window of Floating Worlds）
 
-基于 WebGL2 单世界流体融球渲染引擎打造的每日 4K 艺术、自然纪实、微距深空与维基百科深度关联漫游画册，支持 AI 协作推流调音与专属主题策展页生成。
+基于 WebGL2 单世界流体融球渲染引擎打造的每日高清艺术、自然纪实、微距深空与维基百科深度关联漫游画册，支持 AI 协作推流调音与「珍珠策展」混合叙事专题页生成。
 
 > `snapshots/v1.0-1to1-ref-base/` 完整保留了最初的纯程序化 1:1 物理与着色器底板存档。
 
 ## 核心特性
 
-1. **WebGL2 水彩胶质气泡星图 + 波纹折射子泡**：
-   - 31 抽头高斯融球、连线发光水珠、全息背景丝绸色带、60fps 稳帧与弹窗后台 0% GPU 休眠。
-   - 4 套清透釉色主题（晨露影青 / 宣纸微霞 / 珠母贝光 / 柔雾原典）+ 6 款中西文美学字体现场试衣间。
-2. **三态一体 4K 展厅（非 Top-Layer，原生兼容划词与双语网页翻译插件）**：
-   - **◈ 漫游画卷**：按「馆藏年代」（商周秦汉、唐宋风雅、明清器物、古埃及、两河波斯、希腊罗马、江户浮世绘、文艺复兴、印象派等）或「自然与微距」（生灵纪实、微距奇观、幽林飞瀑、极地流光、雪峰冰湖、深海环礁、天象熔岩、地理遗产、轨道俯瞰、深空星云）瀑布流浏览。
-   - **◫ 图文并排 · Wiki**：左侧 4K 原图滚轮无级缩放 + 底部胶片切换，右侧独立滚动完整多章节维基百科词条、顺藤摸瓜知识轨迹与只读收藏库联动。
-   - **⛶ 全屏 4K 沉浸**：`100vw × 100dvh` 暗房全屏观画。
-3. **IME 安全维基百科实时搜索**：
-   - 顶栏与展厅右栏双搜索入口，实时词条联想（中 / 英自动识别），直开图文并排全章阅读。
-4. **♡ 点心收藏与抽屉私藏画匣（Saved Gallery）**：
-   - 画卷卡片右上角、展厅顶栏、全屏工具栏、气泡速览卡均可一键点心收藏，自动同步至抽屉 `私藏画匣 · GALLERY` 与本地 `feed-profile/favorites.json`。
-5. **Fable / AI 专属主题策展页（直发链接即看）**：
-   - **持久化短链专题页（`/p/<slug>`）**：
+1. **多馆藏三巨头 + 自然科学多源聚合（按真实像素分级标注 `4K / 2K / HD`）**：
+   - **博物馆开放馆藏**：**大都会艺术博物馆（The Met `v1.1` Search API + Wikidata QID 实体对齐）**、**克利夫兰艺术博物馆（CMA CC0）**、**芝加哥艺术博物馆（AIC IIIF HD · 1686w）**。
+   - **自然、生灵与深空**：**Wikimedia Commons 三级评选（`assessment:featured|quality|valued`）**、**iNaturalist 科研级物种观察（CC0/CC-BY + 物种维基直连）**、**NASA Images API（JWST / Hubble / ISS 科学实拍）**、**Google Earth View**、**Bing UHD**。
+2. **三态一体展厅（非 Top-Layer，原生兼容划词与双语网页翻译插件）**：
+   - **◈ 漫游画卷**：支持画作珍珠、单张串词手记、跨双列 **维基百科知识切片卡（`kind: "wiki"`）** 与 **幕间拾句卡（`kind: "quote"`）** 混排叙事。
+   - **◫ 图文并排 · Wiki**：左侧原图滚轮无级缩放 + 胶片条快切，右侧独立滚动完整多章节维基百科词条（支持 Wikidata `QID` 精确消歧与跨语种同实体跳转）、顺藤摸瓜知识轨迹与只读收藏库联动。
+   - **⛶ 全屏沉浸**：`100vw × 100dvh` 暗房观画。
+3. **IME 安全维基百科实时搜索 + ♡ 点心收藏（私藏画匣）**：
+   - 顶栏与展厅右栏双入口实时词条联想；任意画作一键点心收藏至抽屉 `私藏画匣 · GALLERY`（`feed-profile/favorites.json`）。
+4. **Fable / AI 轻量「珍珠策展」工作流（省 Token · 14 天冷却去重 · 零跑题）**：
+   - **Step 1 — 轻量候选探针**（用 `|` 一次并行搜多个意象，每条仅返回约 28 tokens 的短 ID 与核心元数据，完整图链自动沉入本地 `feed-profile/pearls-vault.json`）：
      ```powershell
-     node fable-page.js --slug song-celadon-mist --title "天青等烟雨 · 宋瓷与云山特辑" --q "Song dynasty celadon landscape scroll" --wiki "汝窑" --note "挑了一组雨过天青的宋代青瓷与水墨云山，点开任意画作即可并排深读维基脉络。"
+     node fable-page.js --search "astrolabe | armillary sphere | Carina Nebula | nudibranch" --limit 16
      ```
-     运行后直接返回专题页链接（同时自动挂载至全屏菜单抽屉「✦ 专题特辑」书架）。关键词凑不出图（图源限流或太冷门）时返回 0 件、不建页。
-   - **自己挑作品**：加 `--items picks.json`，`picks.json` 是从 `/api/curate?q=...` 结果里挑出的作品对象数组（也接受 `/api/curate` 的原样输出）；纯 id 列表不行。
-   - **免建文件无状态直达链接**：
-     `/?title=微距雪花与晶簇&q=macro+snowflake+quartz+crystal&wiki=微距摄影&note=给你的冬日微距特辑`
+   - **Step 2 — 串珠成链发布混合叙事页**（支持短 ID、单张旁白 `caption`、`kind: "wiki"` 百科知识切片、`kind: "quote"` 幕间拾句自由混排，自动记录 14 天策展冷却账本 `collection-history.json`，用户点过 `♡` 的作品自动豁免冷却）：
+     ```powershell
+     node fable-page.js --curate plan.json
+     # 或直接传短 ID 快速建页：
+     node fable-page.js --slug brass-stars --title "黄铜里的星空" --ids "met-live-444408,met-live-451699,nasa-carina_nebula" --wiki "星盘" --note "导览寄语"
+     ```
+   - **辅助查询与单步兼容命令**：
+     ```powershell
+     node fable-page.js --list       # 查看所有已发布专题页
+     node fable-page.js --history    # 查看 14 天冷却去重账本与她的 ♡ 收藏
+     node fable-page.js --slug song-celadon-mist --title "天青等烟雨" --q "Song dynasty celadon" --wiki "汝窑"
+     ```
 
 ## 本地运行
 

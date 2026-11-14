@@ -1061,12 +1061,18 @@
       const idStr = String(it.id || '');
       if (it.mapUrl) {
         it.sourceUrl = it.mapUrl;
+      } else if (idStr.indexOf('met-live-') === 0) {
+        it.sourceUrl = 'https://www.metmuseum.org/art/collection/search/' + idStr.replace('met-live-', '');
       } else if (idStr.indexOf('cma-live-') === 0) {
         it.sourceUrl = 'https://www.clevelandart.org/art/' + idStr.replace('cma-live-', '');
       } else if (idStr.indexOf('aic-live-') === 0) {
         it.sourceUrl = 'https://www.artic.edu/artworks/' + idStr.replace('aic-live-', '');
       } else if (idStr.indexOf('commons-') === 0) {
         it.sourceUrl = 'https://commons.wikimedia.org/?curid=' + idStr.replace('commons-', '');
+      } else if (idStr.indexOf('inat-') === 0) {
+        it.sourceUrl = 'https://www.inaturalist.org/observations/' + idStr.replace('inat-', '').split('-')[0];
+      } else if (idStr.indexOf('nasa-') === 0) {
+        it.sourceUrl = 'https://images.nasa.gov/details/' + encodeURIComponent(idStr.replace('nasa-', ''));
       } else if (it.fullUrl && it.fullUrl.indexOf('clevelandart.org') >= 0) {
         const acc = it.fullUrl.match(/\/([0-9.a-zA-Z_-]+)_print\.jpg/i);
         it.sourceUrl = acc ? ('https://www.clevelandart.org/art/' + acc[1]) : 'https://www.clevelandart.org/art/collection/search';

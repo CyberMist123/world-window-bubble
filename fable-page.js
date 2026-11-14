@@ -1,15 +1,33 @@
 #!/usr/bin/env node
 /**
- * Fable / AI 专属主题页面生成器（World Window Curated Page CLI）
+ * Fable / AI 专属主题策展器（World Window Pearl Curation CLI · V3.4）
  *
- * 用法示例：
- *   node fable-page.js --slug celadon-mist --title "天青等烟雨 · 宋瓷与山水" --q "Song dynasty celadon handscroll" --wiki "汝窑" --note "挑了几件雨过天青的宋代器物与水墨山水，配着维基慢慢看。"
- *   node fable-page.js --list
- *   node fable-page.js --slug fable-time-boxes --title "装时间的小盒子" --q "clock watch sundial" --items picks.json
- *     （picks.json = 自己从 /api/curate 结果里挑出的作品对象数组；不传 --items 就按关键词自动凑）
+ * 【推荐两步策展流 · 极省 Token 且零跑题】
+ *   Step 1 — 多馆藏 + 自然科学轻量探针（支持 | 并行搜多个意象，每条仅 ~28 tokens）：
+ *     node fable-page.js --search "astrolabe | armillary sphere | Carina Nebula" [--domain museum|landscape] [--limit 18]
  *
- * 也支持免建文件直接发无状态链接给用户：
- *   https://<domain>/?title=微距雪花与晶簇&q=macro+snowflake+crystal&wiki=雪花&note=...
+ *   Step 2 — 串珠成链（支持「画作短ID + 单张串词批注 + Wiki知识切片卡 + 幕间拾句卡」混合叙事流）：
+ *     node fable-page.js --curate plan.json
+ *     （或直接传短 ID 列表：node fable-page.js --slug brass-stars --title "黄铜里的星空" --ids "met-live-444854,cma-live-..." --wiki "星盘" --note "..."）
+ *
+ *   plan.json 示例：
+ *   {
+ *     "slug": "brass-and-nebula",
+ *     "title": "把星空折进黄铜里",
+ *     "note": "开篇导览寄语……",
+ *     "wiki": "星盘",
+ *     "pearls": [
+ *       { "id": "met-live-444854", "caption": "Fable 对这张器物的单张旁白……" },
+ *       { "kind": "wiki", "wiki": "星盘", "title": "一块黄铜圆盘怎么测算星辰？", "caption": "顺着这张知识切片看懂刻度——" },
+ *       "cma-live-111514",
+ *       { "kind": "quote", "quote": "一句过渡拾句……", "subtitle": "—— 幕间手记" }
+ *     ]
+ *   }
+ *
+ * 【其他辅助与兼容命令】
+ *   node fable-page.js --list       # 查看所有已发布专题页
+ *   node fable-page.js --history    # 查看 14 天冷却去重账本与她的点心收藏 ♡
+ *   node fable-page.js --slug celadon-mist --title "天青等烟雨" --q "Song dynasty celadon" --wiki "汝窑"
  */
 const http = require('http');
 const fs = require('fs');
@@ -82,45 +100,103 @@ function requestLocalApi(method, apiPath, bodyObj) {
   });
 }
 
+function readJsonInput(fileArg) {
+  const rawStr = fileArg === '-'
+    ? fs.readFileSync(0, 'utf8')
+    : fs.readFileSync(path.resolve(String(fileArg)), 'utf8');
+  return JSON.parse(rawStr.replace(/^\uFEFF/, ''));
+}
+
 (async () => {
   const args = parseArgs(process.argv);
+
   if (args.list) {
     const res = await requestLocalApi('GET', '/api/pages');
     console.log(JSON.stringify(res, null, 2));
     return;
   }
-  const title = args.title || args.q || args.keywords;
-  if (!title) {
-    console.error('用法: node fable-page.js --title "主题标题" --q "关键词" [--slug custom-slug] [--wiki "关联维基词条"] [--note "导览寄语"] [--domain museum|landscape] [--items picks.json]');
-    process.exit(1);
+
+  if (args.history) {
+    const res = await requestLocalApi('GET', '/api/pearls/history');
+    console.log(JSON.stringify(res, null, 2));
+    return;
   }
-  // --items：自己挑的作品清单。接受作品对象数组，或 /api/curate、/api/pages/<slug> 的原样输出（{page:{items}} / {items}）。
-  // 只有 id 不够：服务端靠完整对象（标题、图链等）出图，从 /api/curate 的结果里挑整条拿过来。
+
+  if (args.search) {
+    const q = typeof args.search === 'string' ? args.search : (args.q || args.keywords || '');
+    if (!q) {
+      console.error('用法: node fable-page.js --search "astrolabe | Carina Nebula" [--domain museum|landscape] [--limit 18]');
+      process.exit(1);
+    }
+    const qs = new URLSearchParams({ q });
+    if (args.domain) qs.set('domain', String(args.domain));
+    if (args.wiki) qs.set('wiki', String(args.wiki));
+    if (args.limit) qs.set('limit', String(args.limit));
+    if (args['include-cooled'] || args.includeCooled) qs.set('includeCooled', '1');
+    const res = await requestLocalApi('GET', `/api/pearls/search?${qs.toString()}`);
+    console.log(JSON.stringify(res, null, 2));
+    return;
+  }
+
+  let plan = {};
+  if (args.curate) {
+    try {
+      const loaded = readJsonInput(args.curate);
+      plan = Array.isArray(loaded) ? { pearls: loaded } : (loaded || {});
+    } catch (e) {
+      console.error('读不了 --curate 编排文件:', e.message);
+      process.exit(1);
+    }
+  }
+
   let items;
+  let pearls = Array.isArray(plan.pearls) ? plan.pearls : null;
+  if (args.ids) {
+    pearls = String(args.ids).split(',').map((s) => s.trim()).filter(Boolean);
+  }
   if (args.items) {
     try {
-      const raw = JSON.parse(fs.readFileSync(path.resolve(String(args.items)), 'utf8').replace(/^﻿/, ''));
-      items = Array.isArray(raw) ? raw : (raw && raw.page && raw.page.items) || (raw && raw.items);
+      const raw = readJsonInput(args.items);
+      const arr = Array.isArray(raw) ? raw : (raw && raw.pearls) || (raw && raw.page && raw.page.items) || (raw && raw.items);
+      if (!Array.isArray(arr) || !arr.length) {
+        console.error('--items / pearls 数组为空。');
+        process.exit(1);
+      }
+      items = arr;
     } catch (e) {
       console.error('读不了 --items 文件:', e.message);
       process.exit(1);
     }
-    if (!Array.isArray(items) || !items.length || items.some((it) => !it || typeof it !== 'object' || !it.id)) {
-      console.error('--items 要的是作品对象数组（每条至少有 id 和图链），不是纯 id 列表。');
-      process.exit(1);
-    }
+  } else if (!pearls && Array.isArray(plan.items) && plan.items.length) {
+    items = plan.items;
   }
-  const res = await requestLocalApi('POST', '/api/pages', {
+
+  const title = args.title || plan.title || args.q || args.keywords || plan.keywords || plan.q;
+  if (!title) {
+    console.error(
+      '用法:\n' +
+      '  1) 探针选品: node fable-page.js --search "astrolabe | Carina Nebula" [--limit 18]\n' +
+      '  2) 编排成册: node fable-page.js --curate plan.json\n' +
+      '  3) 快速建页: node fable-page.js --title "主题标题" --ids "met-live-444854,cma-live-..." [--wiki "关联词条"] [--note "寄语"]\n' +
+      '  4) 自动检索: node fable-page.js --title "主题标题" --q "关键词" [--domain museum|landscape]'
+    );
+    process.exit(1);
+  }
+
+  const payload = {
+    ...(pearls ? { pearls } : {}),
     ...(items ? { items } : {}),
-    slug: args.slug || '',
+    slug: args.slug || plan.slug || '',
     title,
-    subtitle: args.subtitle || '',
-    note: args.note || '',
-    author: args.author || 'Fable',
-    keywords: args.q || args.keywords || title,
-    domain: args.domain || '',
-    wikiTitle: args.wiki || ''
-  });
+    subtitle: args.subtitle || plan.subtitle || '',
+    note: args.note || plan.note || '',
+    author: args.author || plan.author || 'Fable',
+    keywords: args.q || args.keywords || plan.keywords || plan.q || title,
+    domain: args.domain || plan.domain || '',
+    wikiTitle: args.wiki || plan.wiki || plan.wikiTitle || ''
+  };
+
+  const res = await requestLocalApi('POST', '/api/pages', payload);
   if (!res || !res.ok) {
     console.error('创建失败:', (res && res.error) || res);
     process.exit(1);

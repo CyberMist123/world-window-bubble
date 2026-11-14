@@ -8,4 +8,6 @@ feed-profile/seen.json
 feed-profile/signals.jsonl
 feed-profile/preferences.json
 feed-profile/preferences.md
+feed-profile/pearls-vault.json
+feed-profile/collection-history.json
 *.log

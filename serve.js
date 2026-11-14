@@ -40,6 +40,7 @@ const PROFILE_DIR = path.join(ROOT, 'feed-profile');
 const CACHE_DIR = path.join(PROFILE_DIR, '.cache');
 const IMG_CACHE_DIR = path.join(CACHE_DIR, 'img');
 const WIKI_CACHE_DIR = path.join(CACHE_DIR, 'wiki');
+const MET_OBJ_CACHE_DIR = path.join(CACHE_DIR, 'met-obj');
 const PAGES_DIR = path.join(PROFILE_DIR, 'pages');
 
 const PREF_JSON = path.join(PROFILE_DIR, 'preferences.json');
@@ -48,6 +49,8 @@ const SEEN_JSON = path.join(PROFILE_DIR, 'seen.json');
 const SIGNALS_JSONL = path.join(PROFILE_DIR, 'signals.jsonl');
 const AI_INBOX_JSON = path.join(PROFILE_DIR, 'ai-inbox.json');
 const FAVORITES_JSON = path.join(PROFILE_DIR, 'favorites.json');
+const PEARLS_VAULT_JSON = path.join(PROFILE_DIR, 'pearls-vault.json');
+const COLLECTION_HISTORY_JSON = path.join(PROFILE_DIR, 'collection-history.json');
 const LIVE_POOL_JSON = path.join(CACHE_DIR, 'live-pool.json');
 const EARTHVIEW_JSON = path.join(CACHE_DIR, 'earthview.json');
 const BING_UHD_JSON = path.join(CACHE_DIR, 'bing-uhd.json');
@@ -58,6 +61,7 @@ const LWA_VAULT_ID = process.env.LWA_VAULT_ID || '';
 
 fs.mkdirSync(IMG_CACHE_DIR, { recursive: true });
 fs.mkdirSync(WIKI_CACHE_DIR, { recursive: true });
+fs.mkdirSync(MET_OBJ_CACHE_DIR, { recursive: true });
 fs.mkdirSync(PAGES_DIR, { recursive: true });
 
 const MIME = {
@@ -82,6 +86,9 @@ const ALLOWED_IMG_HOSTS = new Set([
   'upload.wikimedia.org',
   'thumb.wikimedia.org',
   'images.metmuseum.org',
+  'inaturalist-open-data.s3.amazonaws.com',
+  'static.inaturalist.org',
+  'images-assets.nasa.gov',
   'www.gstatic.com',
   'lh3.googleusercontent.com',
   'www.bing.com',
@@ -757,16 +764,65 @@ function formatAuthenticTitle(rawTitle, originHint, dateHint) {
   };
 }
 
+function formatResolutionInfo(w, h, fallbackTag) {
+  const nw = Number(w || 0);
+  const nh = Number(h || 0);
+  const maxDim = Math.max(nw, nh);
+  if (nw > 0 && nh > 0) {
+    if (maxDim >= 3400) return { resBadge: '4K', resText: `4K · ${nw}×${nh}`, width: nw, height: nh };
+    if (maxDim >= 1900) return { resBadge: '2K', resText: `2K · ${nw}×${nh}`, width: nw, height: nh };
+    return { resBadge: 'HD', resText: `${nw}×${nh}`, width: nw, height: nh };
+  }
+  return { resBadge: 'HD', resText: fallbackTag || 'HD', width: 0, height: 0 };
+}
+
+function extractWikidataQid(rawUrlOrQid) {
+  const m = String(rawUrlOrQid || '').match(/\b(Q\d{2,12})\b/i);
+  return m ? m[1].toUpperCase() : '';
+}
+
 function normalizeLiveItem(it) {
   if (!it || typeof it !== 'object') return it;
   const out = Object.assign({}, it);
   if (!out.previewUrl && out.thumbUrl) out.previewUrl = out.thumbUrl;
+  const idStr = String(out.id || '');
   if (!out.sourceUrl) {
-    const idStr = String(out.id || '');
     if (idStr.startsWith('cma-live-')) out.sourceUrl = `https://www.clevelandart.org/art/${idStr.replace('cma-live-', '')}`;
     else if (idStr.startsWith('aic-live-')) out.sourceUrl = `https://www.artic.edu/artworks/${idStr.replace('aic-live-', '')}`;
+    else if (idStr.startsWith('met-live-')) out.sourceUrl = `https://www.metmuseum.org/art/collection/search/${idStr.replace('met-live-', '')}`;
     else if (idStr.startsWith('commons-')) out.sourceUrl = `https://commons.wikimedia.org/?curid=${idStr.replace('commons-', '')}`;
+    else if (idStr.startsWith('inat-')) out.sourceUrl = `https://www.inaturalist.org/observations/${idStr.replace('inat-', '').split('-')[0]}`;
+    else if (idStr.startsWith('nasa-')) out.sourceUrl = `https://images.nasa.gov/details/${encodeURIComponent(idStr.replace('nasa-', ''))}`;
     else if (out.mapUrl) out.sourceUrl = out.mapUrl;
+  }
+  if (!out.sourceName) {
+    if (idStr.startsWith('met-live-')) out.sourceName = 'The Met';
+    else if (idStr.startsWith('cma-live-')) out.sourceName = 'Cleveland Museum';
+    else if (idStr.startsWith('aic-live-')) out.sourceName = 'Art Institute of Chicago';
+    else if (idStr.startsWith('commons-')) out.sourceName = 'Wikimedia Commons';
+    else if (idStr.startsWith('inat-')) out.sourceName = 'iNaturalist';
+    else if (idStr.startsWith('nasa-')) out.sourceName = 'NASA';
+    else if (idStr.startsWith('ev-')) out.sourceName = 'Earth View';
+    else if (idStr.startsWith('bing-')) out.sourceName = 'Bing UHD';
+  }
+  if (!out.resBadge) {
+    if (out.kind === 'wiki') out.resBadge = 'WIKI';
+    else if (out.kind === 'quote') out.resBadge = 'QUOTE';
+    else if (idStr.startsWith('aic-live-')) out.resBadge = 'HD';
+    else if (idStr.startsWith('ev-') || idStr.startsWith('bing-')) out.resBadge = '4K';
+    else if (out.width || out.height) out.resBadge = formatResolutionInfo(out.width, out.height, 'HD').resBadge;
+    else {
+      const dimMatch = String(out.subtitle || '').match(/(\d{3,5})\s*[×x]\s*(\d{3,5})/);
+      out.resBadge = dimMatch
+        ? formatResolutionInfo(Number(dimMatch[1]), Number(dimMatch[2]), 'HD').resBadge
+        : 'HD';
+    }
+  }
+  if (out.caption && !out.fableCaption) {
+    out.fableCaption = String(out.caption).trim();
+  }
+  if (out.wikidataQid) {
+    out.wikidataQid = extractWikidataQid(out.wikidataQid);
   }
   // 清除旧缓存里残留的模板伪分类标题与样板套话
   const curTitle = String(out.title || '').trim();
@@ -793,7 +849,7 @@ function normalizeLiveItem(it) {
   return out;
 }
 
-// ==================== CMA 与芝加哥艺术博物馆 (AIC) 4K 抓取 ====================
+// ==================== 多馆藏与自然科学图源适配器（The Met v1.1 + CMA + AIC + Commons 3级 + iNaturalist + NASA） ====================
 const ATTRIBUTION_PREFIX_RE = /^(?:attributed to|workshop of|studio of|circle of|follower of|school of|after|manner of|style of|imitator of|copy after|possibly by|probably by|possibly|probably)\s+/i;
 
 function inferArtworkWikiTopic(title, creator, culture, fallbackTopic) {
@@ -813,183 +869,495 @@ function inferArtworkWikiTopic(title, creator, culture, fallbackTopic) {
   return cleanCulture || String(title || '').slice(0, 28) || '艺术史';
 }
 
+function mapCmaRowToItem(r, channelId, chosenTerm, extraMeta) {
+  if (!r || !r.images) return null;
+  const web = r.images.web;
+  const pr = r.images.print;
+  // 冷门题材（如早期星盘、钟表）允许只有清晰 web 图而缺 TIFF print 衍生件
+  const allowWebOnly = Boolean(extraMeta && extraMeta.curated);
+  if (!web || !web.url) return null;
+  if (!allowWebOnly && (!pr || !pr.url)) return null;
+
+  const fullImgObj = (pr && pr.url) ? pr : web;
+  const w = Number(fullImgObj.width || web.width || 0);
+  const h = Number(fullImgObj.height || web.height || 0);
+  const minPx = allowWebOnly ? 860 : 1300;
+  if (w > 0 && h > 0) {
+    const ratio = w / h;
+    if (ratio < 0.28 || ratio > 3.9 || Math.max(w, h) < minPx) return null;
+  }
+
+  const creator = Array.isArray(r.creators) && r.creators[0] ? r.creators[0].description : '';
+  const dateStr = r.creation_date || '';
+  const culture = Array.isArray(r.culture) ? r.culture.join(', ') : (r.culture || '');
+  const titleClean = String(r.title || 'Untitled').trim();
+  const matchRe = extraMeta && extraMeta.matchRe;
+  if (matchRe) {
+    const probe = `${culture} ${creator} ${dateStr} ${r.department || ''} ${titleClean}`;
+    if (!matchRe.test(probe)) return null;
+  }
+  const wallDesc = stripHtml(r.wall_description || r.description || '');
+  const fbWiki = extraMeta && extraMeta.wikiTitle;
+  const fmt = formatAuthenticTitle(titleClean, culture || creator, dateStr);
+  const resInfo = formatResolutionInfo(w, h, 'CMA CC0');
+
+  return {
+    id: `cma-live-${r.id}`,
+    sourceName: 'Cleveland Museum',
+    channel: channelId || 'antiques',
+    kind: 'image',
+    facet: (extraMeta && extraMeta.facet) || '',
+    civilization: (extraMeta && extraMeta.label) || culture || '',
+    title: fmt.displayTitle,
+    enTitle: fmt.subLabel,
+    shortTitle: fmt.shortTitle,
+    subtitle: [creator || culture, dateStr, r.technique || '', resInfo.resText].filter(Boolean).join(' · '),
+    resBadge: resInfo.resBadge,
+    width: resInfo.width,
+    height: resInfo.height,
+    thumbUrl: web.url,
+    previewUrl: web.url,
+    fullUrl: fullImgObj.url,
+    sourceUrl: r.url || `https://www.clevelandart.org/art/${r.accession_number || r.id}`,
+    wikiTitle: inferArtworkWikiTopic(titleClean, creator, culture, fbWiki),
+    wikiFallback: fbWiki || String(culture || '').split(',')[0].trim() || '艺术史',
+    relatedSeeds: (extraMeta && extraMeta.relatedSeeds) || [fbWiki, culture, r.department].filter(Boolean),
+    story: wallDesc ? wallDesc.slice(0, 440) : '',
+    meta: [culture || (extraMeta && extraMeta.label) || 'CC0', dateStr || r.type || '', 'Cleveland Museum of Art'].filter(Boolean).slice(0, 3),
+    tags: [chosenTerm, culture, r.type].filter(Boolean).slice(0, 4),
+    palette: PALETTES_BY_CHANNEL[channelId] || PALETTES_BY_CHANNEL.antiques
+  };
+}
+
+async function fetchCmaObjectById(rawId) {
+  const numId = String(rawId || '').replace(/^cma-live-/, '').trim();
+  if (!numId) return null;
+  const json = await fetchJsonHttps(`https://openaccess-api.clevelandart.org/api/artworks/${encodeURIComponent(numId)}`, 6000).catch(() => null);
+  const row = json && json.data;
+  return row ? mapCmaRowToItem(row, 'antiques', '', { curated: true }) : null;
+}
+
 async function fetchCmaChannel(channelId, terms, skipOffset, extraMeta) {
   const chosenTerm = Array.isArray(terms) && terms.length
     ? terms[Math.abs(skipOffset) % terms.length]
     : String(terms || '');
-  const skip = extraMeta && extraMeta.matchRe ? Math.max(0, (skipOffset * 7) % 28) : Math.max(0, skipOffset % 48);
-  const url = `https://openaccess-api.clevelandart.org/api/artworks/?has_image=1&cc0=1&limit=30&skip=${skip}&q=${encodeURIComponent(chosenTerm)}`;
+  const skip = (extraMeta && extraMeta.curated)
+    ? 0
+    : (extraMeta && extraMeta.matchRe ? Math.max(0, (skipOffset * 7) % 28) : Math.max(0, skipOffset % 48));
+  const url = `https://openaccess-api.clevelandart.org/api/artworks/?has_image=1&cc0=1&limit=28&skip=${skip}&q=${encodeURIComponent(chosenTerm)}`;
   const json = await fetchJsonHttps(url, 6500);
   const rows = Array.isArray(json && json.data) ? json.data : [];
   const out = [];
-  const matchRe = extraMeta && extraMeta.matchRe;
-
   for (const r of rows) {
-    const web = r.images && r.images.web;
-    const pr = r.images && r.images.print;
-    if (!web || !web.url || !pr || !pr.url) continue;
-    const w = Number(pr.width || web.width || 0);
-    const h = Number(pr.height || web.height || 0);
-    if (w > 0 && h > 0) {
-      const ratio = w / h;
-      if (ratio < 0.30 || ratio > 3.8 || Math.max(w, h) < 1400) continue;
-    }
-    const creator = Array.isArray(r.creators) && r.creators[0] ? r.creators[0].description : '';
-    const dateStr = r.creation_date || '';
-    const culture = Array.isArray(r.culture) ? r.culture.join(', ') : (r.culture || '');
-    const titleClean = String(r.title || 'Untitled').trim();
-    if (matchRe) {
-      const probe = `${culture} ${creator} ${dateStr} ${r.department || ''} ${titleClean}`;
-      if (!matchRe.test(probe)) continue;
-    }
-    const wallDesc = stripHtml(r.wall_description || r.description || '');
-    const fbWiki = extraMeta && extraMeta.wikiTitle;
-    const fmt = formatAuthenticTitle(titleClean, culture || creator, dateStr);
-
-    out.push({
-      id: `cma-live-${r.id}`,
-      channel: channelId,
-      kind: 'image',
-      facet: (extraMeta && extraMeta.facet) || '',
-      civilization: (extraMeta && extraMeta.label) || culture || '',
-      title: fmt.displayTitle,
-      enTitle: fmt.subLabel,
-      shortTitle: fmt.shortTitle,
-      subtitle: [creator || culture, dateStr, r.technique || '', w && h ? `${w}×${h}` : 'CMA CC0'].filter(Boolean).join(' · '),
-      thumbUrl: web.url,
-      previewUrl: web.url,
-      fullUrl: pr.url,
-      sourceUrl: r.url || `https://www.clevelandart.org/art/${r.accession_number || r.id}`,
-      wikiTitle: inferArtworkWikiTopic(titleClean, creator, culture, fbWiki),
-      wikiFallback: fbWiki || String(culture || '').split(',')[0].trim() || '艺术史',
-      relatedSeeds: (extraMeta && extraMeta.relatedSeeds) || [fbWiki, culture, r.department].filter(Boolean),
-      story: wallDesc ? wallDesc.slice(0, 440) : '',
-      meta: [culture || (extraMeta && extraMeta.label) || 'Open Access', dateStr || r.type || '', 'Cleveland Museum of Art'].filter(Boolean).slice(0, 3),
-      tags: [chosenTerm, culture].filter(Boolean).slice(0, 4),
-      palette: PALETTES_BY_CHANNEL[channelId] || PALETTES_BY_CHANNEL.antiques
-    });
+    const mapped = mapCmaRowToItem(r, channelId, chosenTerm, extraMeta);
+    if (mapped) out.push(mapped);
   }
   return out;
+}
+
+function mapAicRowToItem(r, channelId, extraMeta) {
+  if (!r || !r.image_id) return null;
+  const artistLine = String(r.artist_display || '').replace(/\r?\n/g, ' · ').trim();
+  const origin = String(r.place_of_origin || '').trim();
+  const dateStr = String(r.date_display || '').trim();
+  const titleClean = String(r.title || 'Untitled').trim();
+  const matchRe = extraMeta && extraMeta.matchRe;
+  if (matchRe) {
+    const probe = `${origin} ${r.style_title || ''} ${artistLine} ${dateStr} ${titleClean}`;
+    if (!matchRe.test(probe)) return null;
+  }
+  const thumbUrl = `https://www.artic.edu/iiif/2/${r.image_id}/full/843,/0/default.jpg`;
+  const fullUrl = `https://www.artic.edu/iiif/2/${r.image_id}/full/1686,/0/default.jpg`;
+  const desc = stripHtml(r.description || '');
+  const fbWiki = extraMeta && extraMeta.wikiTitle;
+  const fmt = formatAuthenticTitle(titleClean, origin || artistLine.split('·')[0], dateStr);
+
+  return {
+    id: `aic-live-${r.id}`,
+    sourceName: 'Art Institute of Chicago',
+    channel: channelId || 'paintings',
+    kind: 'image',
+    facet: (extraMeta && extraMeta.facet) || '',
+    civilization: (extraMeta && extraMeta.label) || origin || '',
+    title: fmt.displayTitle,
+    enTitle: fmt.subLabel,
+    shortTitle: fmt.shortTitle,
+    subtitle: [artistLine || origin, dateStr, r.medium_display || '', 'IIIF HD · 1686w'].filter(Boolean).join(' · '),
+    resBadge: 'HD',
+    width: 1686,
+    height: 0,
+    thumbUrl,
+    previewUrl: thumbUrl,
+    fullUrl,
+    sourceUrl: `https://www.artic.edu/artworks/${r.id}`,
+    wikiTitle: inferArtworkWikiTopic(titleClean, artistLine.split('·')[0], r.style_title || origin, fbWiki),
+    wikiFallback: fbWiki || r.style_title || origin || '艺术史',
+    relatedSeeds: (extraMeta && extraMeta.relatedSeeds) || [fbWiki, r.style_title, origin].filter(Boolean),
+    story: desc ? desc.slice(0, 440) : '',
+    meta: [origin || (extraMeta && extraMeta.label) || 'Public Domain', dateStr || r.style_title || '', 'Art Institute of Chicago'].filter(Boolean),
+    tags: [origin, r.style_title, r.classification_title].filter(Boolean).slice(0, 4),
+    palette: PALETTES_BY_CHANNEL[channelId] || PALETTES_BY_CHANNEL.paintings
+  };
+}
+
+async function fetchAicObjectById(rawId) {
+  const numId = String(rawId || '').replace(/^aic-live-/, '').trim();
+  if (!numId) return null;
+  const fields = 'id,title,image_id,artist_display,date_display,place_of_origin,medium_display,classification_title,style_title,description';
+  const json = await fetchJsonHttps(`https://api.artic.edu/api/v1/artworks/${encodeURIComponent(numId)}?fields=${fields}`, 6000).catch(() => null);
+  return (json && json.data) ? mapAicRowToItem(json.data, 'paintings', { curated: true }) : null;
 }
 
 async function fetchAicChannel(channelId, queryStr, pageNum, extraMeta) {
-  const page = extraMeta && extraMeta.matchRe ? ((Math.abs(pageNum) % 4) + 1) : Math.max(1, (Math.abs(pageNum) % 6) + 1);
+  const page = (extraMeta && extraMeta.curated)
+    ? 1
+    : (extraMeta && extraMeta.matchRe ? ((Math.abs(pageNum) % 4) + 1) : Math.max(1, (Math.abs(pageNum) % 6) + 1));
   const fields = 'id,title,image_id,artist_display,date_display,place_of_origin,medium_display,classification_title,style_title,description';
   const url =
     `https://api.artic.edu/api/v1/artworks/search?q=${encodeURIComponent(queryStr)}` +
-    `&query[term][is_public_domain]=true&limit=24&page=${page}&fields=${fields}`;
+    `&query[term][is_public_domain]=true&limit=22&page=${page}&fields=${fields}`;
   const json = await fetchJsonHttps(url, 6500);
   const rows = Array.isArray(json && json.data) ? json.data : [];
   const out = [];
-  const matchRe = extraMeta && extraMeta.matchRe;
-
   for (const r of rows) {
-    if (!r || !r.image_id) continue;
-    const artistLine = String(r.artist_display || '').replace(/\r?\n/g, ' · ').trim();
-    const origin = String(r.place_of_origin || '').trim();
-    const dateStr = String(r.date_display || '').trim();
-    const titleClean = String(r.title || 'Untitled').trim();
-    if (matchRe) {
-      const probe = `${origin} ${r.style_title || ''} ${artistLine} ${dateStr} ${titleClean}`;
-      if (!matchRe.test(probe)) continue;
-    }
-    const thumbUrl = `https://www.artic.edu/iiif/2/${r.image_id}/full/843,/0/default.jpg`;
-    const fullUrl = `https://www.artic.edu/iiif/2/${r.image_id}/full/1686,/0/default.jpg`;
-    const desc = stripHtml(r.description || '');
-    const fbWiki = extraMeta && extraMeta.wikiTitle;
-    const fmt = formatAuthenticTitle(titleClean, origin || artistLine.split('·')[0], dateStr);
-
-    out.push({
-      id: `aic-live-${r.id}`,
-      channel: channelId,
-      kind: 'image',
-      facet: (extraMeta && extraMeta.facet) || '',
-      civilization: (extraMeta && extraMeta.label) || origin || '',
-      title: fmt.displayTitle,
-      enTitle: fmt.subLabel,
-      shortTitle: fmt.shortTitle,
-      subtitle: [artistLine || origin, dateStr, r.medium_display || 'Art Institute of Chicago'].filter(Boolean).join(' · '),
-      thumbUrl,
-      previewUrl: thumbUrl,
-      fullUrl,
-      sourceUrl: `https://www.artic.edu/artworks/${r.id}`,
-      wikiTitle: inferArtworkWikiTopic(titleClean, artistLine.split('·')[0], r.style_title || origin, fbWiki),
-      wikiFallback: fbWiki || r.style_title || origin || '艺术史',
-      relatedSeeds: (extraMeta && extraMeta.relatedSeeds) || [fbWiki, r.style_title, origin].filter(Boolean),
-      story: desc ? desc.slice(0, 440) : '',
-      meta: [origin || (extraMeta && extraMeta.label) || 'Public Domain', dateStr || r.style_title || '', 'Art Institute of Chicago'].filter(Boolean),
-      tags: [origin, r.style_title, r.classification_title].filter(Boolean).slice(0, 4),
-      palette: PALETTES_BY_CHANNEL[channelId] || PALETTES_BY_CHANNEL.paintings
-    });
+    const mapped = mapAicRowToItem(r, channelId, extraMeta);
+    if (mapped) out.push(mapped);
   }
   return out;
 }
 
-async function fetchCommonsFeatured(channelId, terms, offset, extraMeta) {
-  // 对含空格的多词词组自动加双引号，避免 MediaWiki CirrusSearch 将空格拆作高优先级 AND 导致 0 命中
-  const quotedTerms = (Array.isArray(terms) ? terms : [String(terms || '')])
-    .map((t) => String(t || '').trim())
-    .filter(Boolean)
-    .map((t) => (/\s/.test(t) && !t.startsWith('"') ? `"${t}"` : t));
-  const searchExpr = `incategory:"Featured_pictures_on_Wikimedia_Commons" (${quotedTerms.join(' OR ')})`;
-  const off = Math.max(0, (Math.abs(offset) * 8) % 48);
-  const url =
-    `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6` +
-    `&gsrsearch=${encodeURIComponent(searchExpr)}&gsrlimit=28&gsroffset=${off}` +
-    `&prop=imageinfo&iiprop=url|size|extmetadata&iiurlwidth=960&format=json`;
+// ==================== 大都会艺术博物馆 (The Met v1.1 Search + Wikidata QID) ====================
+async function fetchMetObjectRaw(objectId) {
+  const cleanId = String(objectId || '').replace(/^met-live-/, '').replace(/\D+/g, '');
+  if (!cleanId) return null;
+  const cacheFile = path.join(MET_OBJ_CACHE_DIR, `${cleanId}.json`);
+  const cached = readJsonSafe(cacheFile, null);
+  if (cached && cached._cachedAt && Date.now() - cached._cachedAt < 30 * 86400 * 1000) {
+    return cached.data || null;
+  }
+  const obj = await fetchJsonHttps(`https://collectionapi.metmuseum.org/public/collection/v1/objects/${cleanId}`, 6000).catch(() => null);
+  if (obj && obj.objectID) {
+    writeJsonSafe(cacheFile, { _cachedAt: Date.now(), data: obj });
+    return obj;
+  }
+  return null;
+}
 
-  const json = await fetchJsonHttps(url, 8200);
-  const pages = (json && json.query && json.query.pages) ? Object.values(json.query.pages) : [];
+function mapMetObjToItem(o, channelId, queryTerm, extraMeta) {
+  if (!o || !o.isPublicDomain || !o.primaryImage) return null;
+  const creator = String(o.artistDisplayName || '').trim();
+  const culture = [o.culture, o.period, o.dynasty].filter(Boolean).join(', ');
+  const originHint = culture || o.country || creator || o.department || '';
+  const dateStr = String(o.objectDate || '').trim();
+  const titleClean = String(o.title || o.objectName || 'Untitled').trim();
+  const matchRe = extraMeta && extraMeta.matchRe;
+  if (matchRe) {
+    const probe = `${originHint} ${creator} ${dateStr} ${o.department || ''} ${o.classification || ''} ${titleClean}`;
+    if (!matchRe.test(probe)) return null;
+  }
+
+  const fbWiki = extraMeta && extraMeta.wikiTitle;
+  const fmt = formatAuthenticTitle(titleClean, originHint, dateStr);
+  const qid = extractWikidataQid(o.objectWikidata_URL);
+  const tagTerms = Array.isArray(o.tags) ? o.tags.map((t) => t && t.term).filter(Boolean).slice(0, 4) : [];
+  const wikiTopic = inferArtworkWikiTopic(titleClean, creator, o.culture || o.period || tagTerms[0] || '', fbWiki);
+
+  return {
+    id: `met-live-${o.objectID}`,
+    sourceName: 'The Met',
+    channel: channelId || 'antiques',
+    kind: 'image',
+    facet: (extraMeta && extraMeta.facet) || '',
+    civilization: (extraMeta && extraMeta.label) || o.culture || o.period || o.department || '',
+    title: fmt.displayTitle,
+    enTitle: fmt.subLabel,
+    shortTitle: fmt.shortTitle,
+    subtitle: [creator || o.culture || o.period, dateStr, o.medium || '', 'The Met Open Access'].filter(Boolean).join(' · '),
+    resBadge: 'HD',
+    thumbUrl: o.primaryImageSmall || o.primaryImage,
+    previewUrl: o.primaryImageSmall || o.primaryImage,
+    fullUrl: o.primaryImage,
+    sourceUrl: o.objectURL || `https://www.metmuseum.org/art/collection/search/${o.objectID}`,
+    wikidataQid: qid,
+    wikiTitle: wikiTopic,
+    wikiFallback: fbWiki || o.culture || o.period || tagTerms[0] || '大都会艺术博物馆',
+    relatedSeeds: [].concat((extraMeta && extraMeta.relatedSeeds) || [], [fbWiki, o.culture, o.period], tagTerms).filter(Boolean).slice(0, 6),
+    story: '',
+    meta: [o.culture || o.period || o.department || 'Open Access', dateStr, 'The Metropolitan Museum of Art'].filter(Boolean).slice(0, 3),
+    tags: [queryTerm, o.culture || o.period, o.classification].concat(tagTerms).filter(Boolean).slice(0, 5),
+    palette: PALETTES_BY_CHANNEL[channelId] || PALETTES_BY_CHANNEL.antiques
+  };
+}
+
+async function fetchMetObjectById(rawId) {
+  const obj = await fetchMetObjectRaw(rawId);
+  return obj ? mapMetObjToItem(obj, 'antiques', '', { curated: true }) : null;
+}
+
+async function fetchMetChannel(channelId, terms, skipOffset, extraMeta) {
+  const chosenTerm = Array.isArray(terms) && terms.length
+    ? terms[Math.abs(skipOffset) % terms.length]
+    : String(terms || '').trim();
+  if (!chosenTerm) return [];
+  // 2026-10 大都会旧版 /v1/search 退役（返回 410），统一使用新版 /v1.1/search
+  const searchUrl =
+    `https://collectionapi.metmuseum.org/public/collection/v1.1/search?hasImages=true&limit=20&q=${encodeURIComponent(chosenTerm)}`;
+  const sJson = await fetchJsonHttps(searchUrl, 6200).catch(() => null);
+  const allIds = Array.isArray(sJson && sJson.objectIDs) ? sJson.objectIDs : [];
+  if (!allIds.length) return [];
+
+  const start = (extraMeta && extraMeta.curated)
+    ? 0
+    : Math.min(Math.max(0, (Math.abs(skipOffset) * 5) % Math.max(1, allIds.length)), Math.max(0, allIds.length - 8));
+  const sliceIds = allIds.slice(start, start + 10);
+  const rawObjs = await Promise.all(sliceIds.map((id) => fetchMetObjectRaw(id)));
   const out = [];
+  for (const o of rawObjs) {
+    const mapped = mapMetObjToItem(o, channelId, chosenTerm, extraMeta);
+    if (mapped) out.push(mapped);
+  }
+  return out;
+}
+
+// ==================== Wikimedia Commons 三级评审图 (Featured + Quality + Valued) ====================
+const COMMONS_RENDERABLE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const COMMONS_ADULT_RE = /\b(?:nude|nudity|erotic|porn|sex|genitalia|penis|vulva|fetish)\b/i;
+
+async function fetchCommonsFeatured(channelId, terms, offset, extraMeta) {
+  const cleanList = (Array.isArray(terms) ? terms : [String(terms || '')])
+    .map((t) => String(t || '').trim())
+    .filter(Boolean);
+  if (!cleanList.length) return [];
+
+  const quotedTerms = cleanList.map((t) => (/\s/.test(t) && !t.startsWith('"') ? `"${t}"` : t));
+  const isCurated = Boolean(extraMeta && extraMeta.curated);
+  const off = isCurated ? 0 : Math.max(0, (Math.abs(offset) * 8) % 48);
+
+  const runCommonsQuery = async (gsrExpr) => {
+    // 遵循 Magpie wikimedia.js：请求官方 iiurlwidth=1280 缩略图，杜绝手工拼接任意像素宽度引发 HTTP 400
+    const url =
+      `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6` +
+      `&gsrsearch=${encodeURIComponent(gsrExpr)}&gsrlimit=26&gsroffset=${off}` +
+      `&prop=imageinfo&iiprop=url|size|mime|extmetadata&iiurlwidth=1280&format=json`;
+    const json = await fetchJsonHttps(url, 8200).catch(() => null);
+    return (json && json.query && json.query.pages) ? Object.values(json.query.pages) : [];
+  };
+
+  // 主检索：覆盖 Featured + Quality + Valued 三级社区评审高质摄影/图像
+  const tierExpr = `filetype:bitmap assessment:featured|quality|valued (${quotedTerms.join(' OR ')})`;
+  let pages = await runCommonsQuery(tierExpr);
+
+  // 冷门科学/历史专题若三级评审命中不足 3 张，自动放宽至非扫描件位图并靠分辨率与相关性严筛
+  if (isCurated && pages.length < 3) {
+    const looseTerms = cleanList.map((t) => t.replace(/"/g, '')).join(' OR ');
+    const fallbackPages = await runCommonsQuery(`filetype:bitmap -incategory:"Scanned_images" (${looseTerms})`);
+    const seenPid = new Set(pages.map((p) => p && p.pageid));
+    for (const fp of fallbackPages) {
+      if (fp && !seenPid.has(fp.pageid)) pages.push(fp);
+    }
+  }
+
+  const out = [];
+  const minW = isCurated ? 1100 : 1400;
+  const minH = isCurated ? 800 : 900;
 
   for (const p of pages) {
     const ii = Array.isArray(p.imageinfo) ? p.imageinfo[0] : null;
     if (!ii || !ii.url) continue;
+    const mime = String(ii.mime || '').toLowerCase();
     const uLower = ii.url.toLowerCase();
-    if (!uLower.endsWith('.jpg') && !uLower.endsWith('.jpeg') && !uLower.endsWith('.png')) continue;
+    if (!COMMONS_RENDERABLE_MIMES.has(mime) && !uLower.endsWith('.jpg') && !uLower.endsWith('.jpeg') && !uLower.endsWith('.png')) continue;
 
     const w = Number(ii.width || 0);
     const h = Number(ii.height || 0);
-    if (w < 1600 || h < 1000) continue;
+    if (w < minW || h < minH) continue;
     const ratio = w / h;
-    if (ratio < 0.35 || ratio > 3.6) continue;
-
-    const thumbUrl = ii.thumburl || ii.url;
-    let fullUrl = ii.url;
-    if (w > 4000 && ii.thumburl && ii.thumburl.includes('/960px-')) {
-      fullUrl = ii.thumburl.replace('/960px-', '/2560px-');
-    }
+    if (ratio < 0.32 || ratio > 3.7) continue;
 
     const ext = ii.extmetadata || {};
-    const rawTitle = stripHtml(
-      (ext.ObjectName && ext.ObjectName.value) ||
-      String(p.title || '').replace(/^File:/i, '').replace(/\.[a-z]+$/i, '').replace(/_/g, ' ')
-    );
+    const catsStr = String((ext.Categories && ext.Categories.value) || '');
+    const fileTitleClean = String(p.title || '').replace(/^File:/i, '').replace(/\.[a-z0-9]+$/i, '').replace(/_/g, ' ');
+    if (COMMONS_ADULT_RE.test(`${fileTitleClean} ${catsStr}`)) continue;
+
+    const thumbUrl = ii.thumburl || ii.url;
+    const fullUrl = COMMONS_RENDERABLE_MIMES.has(mime) ? ii.url : thumbUrl;
+
+    const rawTitle = stripHtml((ext.ObjectName && ext.ObjectName.value) || fileTitleClean);
     const desc = stripHtml((ext.ImageDescription && ext.ImageDescription.value) || '');
     const artist = stripHtml((ext.Artist && ext.Artist.value) || '');
-    const cleanTitle = rawTitle.length > 60 ? rawTitle.slice(0, 58) + '…' : rawTitle;
-    const subLabel = [artist ? `© ${artist.slice(0, 26)}` : '', `${w}×${h}`].filter(Boolean).join(' · ');
+    const cleanTitle = rawTitle.length > 64 ? rawTitle.slice(0, 62) + '…' : rawTitle;
+    const resInfo = formatResolutionInfo(w, h, 'Commons HD');
+    const subLabel = [artist ? `© ${artist.slice(0, 26)}` : '', resInfo.resText].filter(Boolean).join(' · ');
 
     out.push({
       id: `commons-${p.pageid}`,
-      channel: channelId,
+      sourceName: 'Wikimedia Commons',
+      channel: channelId || 'landscapes',
       kind: 'image',
       facet: (extraMeta && extraMeta.facet) || '',
-      title: cleanTitle || 'Featured Photograph',
+      title: cleanTitle || 'Wikimedia Commons',
       enTitle: (extraMeta && extraMeta.label) || subLabel,
-      shortTitle: compactBubbleShortTitle(cleanTitle || 'Featured'),
-      subtitle: [artist ? `摄影：${artist.slice(0, 32)}` : '', `${w}×${h}`, (extraMeta && extraMeta.label) || 'Wikimedia Featured'].filter(Boolean).join(' · '),
+      shortTitle: compactBubbleShortTitle(cleanTitle || 'Commons'),
+      subtitle: [artist ? `摄影：${artist.slice(0, 32)}` : '', resInfo.resText, (extraMeta && extraMeta.label) || 'Wikimedia Commons'].filter(Boolean).join(' · '),
+      resBadge: resInfo.resBadge,
+      width: resInfo.width,
+      height: resInfo.height,
       thumbUrl,
       previewUrl: thumbUrl,
       fullUrl,
       sourceUrl: ii.descriptionurl || `https://commons.wikimedia.org/?curid=${p.pageid}`,
       wikiTitle: (extraMeta && extraMeta.wikiTitle) || cleanTitle.slice(0, 36),
       wikiFallback: (extraMeta && extraMeta.wikiTitle) || '自然地理学',
-      relatedSeeds: (extraMeta && extraMeta.relatedSeeds) || quotedTerms.slice(0, 3).map((s) => s.replace(/"/g, '')),
+      relatedSeeds: (extraMeta && extraMeta.relatedSeeds) || cleanList.slice(0, 3),
       story: (desc && desc !== cleanTitle) ? desc.slice(0, 380) : '',
-      meta: [(extraMeta && extraMeta.label) || 'Featured 4K', `${w}×${h}`],
-      tags: quotedTerms.slice(0, 4).map((s) => s.replace(/"/g, '')),
+      meta: [(extraMeta && extraMeta.label) || 'Wikimedia Commons', resInfo.resText],
+      tags: cleanList.slice(0, 4),
       palette: PALETTES_BY_CHANNEL[channelId] || PALETTES_BY_CHANNEL.landscapes
+    });
+  }
+  return out;
+}
+
+// ==================== iNaturalist 科研级自然与微距物种观察 (CC0 / CC-BY / CC-BY-SA) ====================
+function upgradeINatPhotoUrl(url, size) {
+  if (!url) return '';
+  return String(url).replace(/\/(square|small|medium|large|original)\.(jpg|jpeg|png|gif)(?=$|\?)/i, `/${size}.$2`);
+}
+
+async function fetchINaturalistChannel(channelId, terms, pageNum, extraMeta) {
+  const chosenTerm = Array.isArray(terms) && terms.length
+    ? terms[Math.abs(pageNum) % terms.length]
+    : String(terms || '').trim();
+  if (!chosenTerm) return [];
+  const page = (extraMeta && extraMeta.curated) ? 1 : ((Math.abs(pageNum) % 4) + 1);
+  // 借鉴 Magpie inaturalist.js：限定 search_on=names + quality_grade=research + order_by=votes，避免搜到用户闲聊备注
+  const url =
+    `https://api.inaturalist.org/v1/observations?q=${encodeURIComponent(chosenTerm)}` +
+    `&search_on=names&quality_grade=research&photos=true&photo_license=cc0,cc-by,cc-by-sa` +
+    `&order_by=votes&per_page=18&page=${page}`;
+  const json = await fetchJsonHttps(url, 6500).catch(() => null);
+  const results = Array.isArray(json && json.results) ? json.results : [];
+  const out = [];
+
+  for (const obs of results) {
+    const photo = (obs && Array.isArray(obs.photos)) ? obs.photos.find((p) => p && p.url && p.license_code) : null;
+    if (!photo) continue;
+    const dims = photo.original_dimensions || {};
+    const w = Number(dims.width || 0);
+    const h = Number(dims.height || 0);
+    if (w > 0 && h > 0 && Math.max(w, h) < 1024) continue;
+
+    const taxon = obs.taxon || {};
+    const commonName = String(taxon.preferred_common_name || obs.species_guess || '').trim();
+    const sciName = String(taxon.name || '').trim();
+    const displayTitle = commonName && sciName && commonName.toLowerCase() !== sciName.toLowerCase()
+      ? `${commonName} (${sciName})`
+      : (commonName || sciName || 'Species Observation');
+    let wikiFromTaxon = sciName || commonName;
+    if (taxon.wikipedia_url) {
+      const wm = String(taxon.wikipedia_url).match(/\/wiki\/([^#?]+)/);
+      if (wm) {
+        try { wikiFromTaxon = decodeURIComponent(wm[1]).replace(/_/g, ' '); } catch (_) {}
+      }
+    }
+    const observer = (obs.user && (obs.user.name || obs.user.login)) || 'iNaturalist';
+    const place = String(obs.place_guess || '').trim();
+    const resInfo = formatResolutionInfo(w, h, '2048px');
+    const previewUrl = upgradeINatPhotoUrl(photo.url, 'large');
+    const fullUrl = upgradeINatPhotoUrl(photo.url, 'original') || previewUrl;
+    const obsDesc = stripHtml(obs.description || '');
+
+    out.push({
+      id: `inat-${obs.id}-${photo.id}`,
+      sourceName: 'iNaturalist',
+      channel: channelId || 'landscapes',
+      kind: 'image',
+      facet: (extraMeta && extraMeta.facet) || '',
+      civilization: (extraMeta && extraMeta.label) || '自然物种观察',
+      title: displayTitle,
+      enTitle: [sciName, place.slice(0, 26)].filter(Boolean).join(' · '),
+      shortTitle: compactBubbleShortTitle(commonName || sciName),
+      subtitle: [`观察者：${observer}`, place, resInfo.resText, String(photo.license_code || '').toUpperCase()].filter(Boolean).join(' · '),
+      resBadge: resInfo.resBadge,
+      width: resInfo.width,
+      height: resInfo.height,
+      thumbUrl: previewUrl,
+      previewUrl,
+      fullUrl,
+      sourceUrl: obs.uri || `https://www.inaturalist.org/observations/${obs.id}`,
+      wikiTitle: wikiFromTaxon,
+      wikiFallback: (extraMeta && extraMeta.wikiTitle) || '生物多样性',
+      relatedSeeds: [sciName, commonName].concat((extraMeta && extraMeta.relatedSeeds) || []).filter(Boolean).slice(0, 5),
+      story: obsDesc ? obsDesc.slice(0, 380) : '',
+      meta: [sciName || 'Research Grade', place.slice(0, 22), 'iNaturalist'].filter(Boolean),
+      tags: [chosenTerm, sciName, 'wildlife'].filter(Boolean).slice(0, 4),
+      palette: PALETTES_BY_CHANNEL[channelId] || PALETTES_BY_CHANNEL.landscapes
+    });
+  }
+  return out;
+}
+
+// ==================== NASA Images API (JWST / Hubble / 地球与深空观测档案) ====================
+async function fetchNasaChannel(channelId, terms, pageNum, extraMeta) {
+  const chosenTerm = Array.isArray(terms) && terms.length
+    ? terms[Math.abs(pageNum) % terms.length]
+    : String(terms || '').trim();
+  if (!chosenTerm) return [];
+  const page = (extraMeta && extraMeta.curated) ? 1 : ((Math.abs(pageNum) % 4) + 1);
+  const url =
+    `https://images-api.nasa.gov/search?q=${encodeURIComponent(chosenTerm)}&media_type=image&page=${page}&page_size=18`;
+  const json = await fetchJsonHttps(url, 6800).catch(() => null);
+  const items = (json && json.collection && Array.isArray(json.collection.items)) ? json.collection.items : [];
+  const out = [];
+
+  for (const row of items) {
+    const d0 = (row && Array.isArray(row.data) && row.data[0]) || null;
+    const links = (row && Array.isArray(row.links)) ? row.links.filter((l) => l && l.href && l.render === 'image') : [];
+    if (!d0 || !d0.nasa_id || !links.length) continue;
+
+    const previewLink = links.find((l) => /~medium\./i.test(l.href)) || links.find((l) => l.rel === 'preview') || links[0];
+    const largeJpgLink = links.find((l) => /~large\./i.test(l.href))
+      || links.find((l) => l.rel === 'canonical' && /\.(jpg|jpeg|png)$/i.test(l.href))
+      || previewLink;
+    const maxLink = links.reduce((best, cur) => ((Number(cur.width || 0) > Number((best && best.width) || 0)) ? cur : best), largeJpgLink);
+    const w = Number((maxLink && maxLink.width) || (largeJpgLink && largeJpgLink.width) || 0);
+    const h = Number((maxLink && maxLink.height) || (largeJpgLink && largeJpgLink.height) || 0);
+    const resInfo = formatResolutionInfo(w, h, 'NASA Archive');
+
+    const titleClean = String(d0.title || 'NASA Observation').trim();
+    const center = String(d0.photographer || d0.secondary_creator || d0.center || 'NASA').trim();
+    const yearStr = d0.date_created ? String(d0.date_created).slice(0, 10) : '';
+    const desc = stripHtml(d0.description || '');
+    const kws = Array.isArray(d0.keywords) ? d0.keywords.filter(Boolean).slice(0, 4) : [];
+    const wikiGuess = kws.find((k) => k.length >= 3 && k.length <= 32 && !/^nasa$/i.test(k))
+      || (extraMeta && extraMeta.wikiTitle)
+      || chosenTerm;
+
+    out.push({
+      id: `nasa-${d0.nasa_id}`,
+      sourceName: 'NASA',
+      channel: channelId || 'cosmos',
+      kind: 'image',
+      facet: (extraMeta && extraMeta.facet) || '',
+      civilization: (extraMeta && extraMeta.label) || center,
+      title: titleClean,
+      enTitle: [center, yearStr].filter(Boolean).join(' · '),
+      shortTitle: compactBubbleShortTitle(titleClean),
+      subtitle: [center, yearStr, resInfo.resText].filter(Boolean).join(' · '),
+      resBadge: resInfo.resBadge,
+      width: resInfo.width,
+      height: resInfo.height,
+      thumbUrl: previewLink.href,
+      previewUrl: previewLink.href,
+      fullUrl: largeJpgLink.href,
+      sourceUrl: `https://images.nasa.gov/details/${encodeURIComponent(d0.nasa_id)}`,
+      wikiTitle: wikiGuess,
+      wikiFallback: (extraMeta && extraMeta.wikiTitle) || '天文学',
+      relatedSeeds: kws.concat((extraMeta && extraMeta.relatedSeeds) || []).filter(Boolean).slice(0, 6),
+      story: desc ? desc.slice(0, 440) : '',
+      meta: [center, yearStr, 'NASA Public Domain'].filter(Boolean),
+      tags: [chosenTerm].concat(kws).filter(Boolean).slice(0, 5),
+      palette: PALETTES_BY_CHANNEL[channelId] || PALETTES_BY_CHANNEL.cosmos
     });
   }
   return out;
@@ -1000,6 +1368,7 @@ const LANDSCAPE_FACETS = {
   'natgeo-wildlife': {
     label: '生灵纪实 · 野生动物',
     terms: ['kingfisher', 'owl', 'fox', 'leopard', 'hummingbird', 'chameleon', 'whale', 'puffin', 'eagle'],
+    useINat: true,
     evRegex: null,
     wikiTitle: '野生动物摄影',
     relatedSeeds: ['国家地理', '鸟类迁徙', '雪豹', '座头鲸', '翠鸟']
@@ -1007,6 +1376,8 @@ const LANDSCAPE_FACETS = {
   'macro-world': {
     label: '微距奇观 · 晶簇与昆虫',
     terms: ['macro', 'dragonfly', 'butterfly', 'snowflake', 'quartz crystal', 'mushroom', 'dewdrop', 'beetle'],
+    iNatTerms: ['nudibranch', 'jumping spider', 'dragonfly', 'moth', 'slime mold', 'jellyfish'],
+    useINat: true,
     evRegex: null,
     wikiTitle: '微距摄影',
     relatedSeeds: ['微距摄影', '雪花', '矿物晶体', '蜻蜓', '结构色']
@@ -1035,6 +1406,8 @@ const LANDSCAPE_FACETS = {
   'ocean-reef': {
     label: '深海环礁 · 海岸崖壁',
     terms: ['coral reef', 'lagoon', 'sea arch', 'cliffs', 'jellyfish', 'wave', 'coastline'],
+    iNatTerms: ['coral reef', 'jellyfish', 'sea anemone', 'nudibranch', 'sea turtle'],
+    useINat: true,
     evRegex: null,
     wikiTitle: '珊瑚礁',
     relatedSeeds: ['珊瑚礁', '环礁', '大堡礁', '水母', '海蚀柱']
@@ -1049,6 +1422,8 @@ const LANDSCAPE_FACETS = {
   'deep-cosmos': {
     label: '深空星云 · 宇宙观测',
     terms: ['nebula', 'Hubble', 'James Webb', 'ESO', 'galaxy', 'Milky Way', 'supernova'],
+    nasaTerms: ['Carina Nebula', 'James Webb galaxy', 'Hubble nebula', 'Saturn rings', 'supernova remnant', 'aurora ISS'],
+    useNasa: true,
     evRegex: null,
     channel: 'cosmos',
     wikiTitle: '星云',
@@ -1070,6 +1445,7 @@ async function exploreFacetItems(domain, facetKey, excludeSet, pageNum = 0) {
     for (const k of chosenKeys) {
       const cfg = MUSEUM_FACETS[k];
       const meta = Object.assign({ facet: k }, cfg);
+      tasks.push(fetchMetChannel(cfg.channel, cfg.cmaTerms, randOffset, meta).catch(() => []));
       tasks.push(fetchCmaChannel(cfg.channel, cfg.cmaTerms, randOffset, meta).catch(() => []));
       if (chosenKeys.length === 1 && Array.isArray(cfg.cmaTerms) && cfg.cmaTerms.length > 1) {
         tasks.push(fetchCmaChannel(cfg.channel, cfg.cmaTerms, randOffset + 1, meta).catch(() => []));
@@ -1087,6 +1463,7 @@ async function exploreFacetItems(domain, facetKey, excludeSet, pageNum = 0) {
         }
       }
     }
+    upsertPearlsVault(merged);
     const fresh = merged.filter((x) => !excludeSet.has(x.id));
     return (fresh.length >= 6 ? fresh : merged).sort(() => Math.random() - 0.5).slice(0, 24);
   }
@@ -1094,43 +1471,66 @@ async function exploreFacetItems(domain, facetKey, excludeSet, pageNum = 0) {
   // domain === 'landscape'
   if (facetKey === 'earthview') {
     const evPool = await ensureEarthViewPool();
-    return sampleEarthViewItems(evPool, 24, null, excludeSet);
+    const out = sampleEarthViewItems(evPool, 24, null, excludeSet);
+    upsertPearlsVault(out);
+    return out;
   }
 
   if (facetKey === 'bing-uhd') {
     const bingItems = await getBingUhdItems(excludeSet);
     const evPool = await ensureEarthViewPool();
     const extraEv = sampleEarthViewItems(evPool, Math.max(8, 24 - bingItems.length), null, excludeSet);
-    return bingItems.concat(extraEv).slice(0, 24);
+    const out = bingItems.concat(extraEv).slice(0, 24);
+    upsertPearlsVault(out);
+    return out;
   }
 
   if (!facetKey || facetKey === 'all' || !LANDSCAPE_FACETS[facetKey]) {
-    const [evPool, bingItems, wildItems, macroItems] = await Promise.all([
+    const [evPool, bingItems, wildItems, iNatItems, nasaItems] = await Promise.all([
       ensureEarthViewPool(),
       getBingUhdItems(excludeSet).catch(() => []),
-      fetchCommonsFeatured('landscapes', ['kingfisher', 'fox', 'owl', 'waterfall', 'aurora'], randOffset, {
+      fetchCommonsFeatured('landscapes', ['kingfisher', 'fox', 'waterfall', 'aurora', 'Dolomites'], randOffset, {
         facet: 'all',
         label: '自然地理与生灵',
         wikiTitle: '国家地理'
       }).catch(() => []),
-      fetchCommonsFeatured('landscapes', ['macro', 'butterfly', 'snowflake', 'Dolomites'], randOffset + 1, {
+      fetchINaturalistChannel('landscapes', ['kingfisher', 'nudibranch', 'butterfly', 'hummingbird'], randOffset, {
         facet: 'all',
-        label: '微距与奇观',
-        wikiTitle: '微距摄影'
+        label: '生灵与微距观察',
+        wikiTitle: '生物多样性'
+      }).catch(() => []),
+      fetchNasaChannel('cosmos', ['Carina Nebula', 'aurora ISS', 'James Webb'], randOffset, {
+        facet: 'all',
+        label: '深空与轨道实拍',
+        wikiTitle: '星云'
       }).catch(() => [])
     ]);
-    const evSample = sampleEarthViewItems(evPool, 5, null, excludeSet);
-    const combined = [].concat(wildItems.slice(0, 8), macroItems.slice(0, 6), bingItems.slice(0, 6), evSample).map(normalizeLiveItem);
+    const evSample = sampleEarthViewItems(evPool, 4, null, excludeSet);
+    const combined = [].concat(
+      wildItems.slice(0, 7),
+      iNatItems.slice(0, 6),
+      nasaItems.slice(0, 4),
+      bingItems.slice(0, 4),
+      evSample
+    ).map(normalizeLiveItem);
+    upsertPearlsVault(combined);
     const fresh = combined.filter((x) => !excludeSet.has(x.id));
     return (fresh.length >= 6 ? fresh : combined).sort(() => Math.random() - 0.5).slice(0, 24);
   }
 
   const lCfg = LANDSCAPE_FACETS[facetKey];
   const chId = lCfg.channel || 'landscapes';
+  const fMeta = Object.assign({ facet: facetKey }, lCfg);
   const tasks = [
-    fetchCommonsFeatured(chId, lCfg.terms, randOffset, Object.assign({ facet: facetKey }, lCfg)).catch(() => []),
-    fetchCommonsFeatured(chId, lCfg.terms, randOffset + 2, Object.assign({ facet: facetKey }, lCfg)).catch(() => [])
+    fetchCommonsFeatured(chId, lCfg.terms, randOffset, fMeta).catch(() => []),
+    fetchCommonsFeatured(chId, lCfg.terms, randOffset + 2, fMeta).catch(() => [])
   ];
+  if (lCfg.useINat) {
+    tasks.push(fetchINaturalistChannel(chId, lCfg.iNatTerms || lCfg.terms, randOffset, fMeta).catch(() => []));
+  }
+  if (lCfg.useNasa) {
+    tasks.push(fetchNasaChannel(chId, lCfg.nasaTerms || lCfg.terms, randOffset, fMeta).catch(() => []));
+  }
   if (lCfg.evRegex) {
     tasks.push(ensureEarthViewPool().then((pool) => sampleEarthViewItems(pool, 6, lCfg.evRegex, excludeSet)).catch(() => []));
   }
@@ -1143,6 +1543,7 @@ async function exploreFacetItems(domain, facetKey, excludeSet, pageNum = 0) {
     }
   }
   const all = Array.from(dedup.values());
+  upsertPearlsVault(all);
   const fresh = all.filter((x) => !excludeSet.has(x.id));
   return (fresh.length >= 6 ? fresh : all).sort(() => Math.random() - 0.5).slice(0, 24);
 }
@@ -1387,15 +1788,38 @@ async function searchWikiSuggestions(rawQuery) {
   return { ok: true, query: q, items: out };
 }
 
-async function getWikiDossier(rawTitle, preferredLang, rawFallback) {
+async function resolveWikidataQidTitle(rawQid, preferredLang) {
+  const qid = extractWikidataQid(rawQid);
+  if (!qid) return null;
+  const apiUrl =
+    `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${encodeURIComponent(qid)}` +
+    `&props=sitelinks&sitefilter=zhwiki|enwiki&format=json&origin=*`;
+  try {
+    const data = await httpsGetJson(apiUrl, 5200);
+    const ent = data && data.entities && data.entities[qid];
+    const links = ent && ent.sitelinks;
+    if (!links) return null;
+    if (preferredLang === 'en') {
+      if (links.enwiki && links.enwiki.title) return { lang: 'en', title: links.enwiki.title, qid };
+      if (links.zhwiki && links.zhwiki.title) return { lang: 'zh', title: links.zhwiki.title, qid };
+    } else {
+      if (links.zhwiki && links.zhwiki.title) return { lang: 'zh', title: links.zhwiki.title, qid };
+      if (links.enwiki && links.enwiki.title) return { lang: 'en', title: links.enwiki.title, qid };
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function getWikiDossier(rawTitle, preferredLang, rawFallback, rawQid) {
   const cleanTitle = String(rawTitle || '').trim();
   const cleanFallback = String(rawFallback || '').trim();
-  if (!cleanTitle) return { ok: false, error: 'Missing title' };
+  const cleanQid = extractWikidataQid(rawQid || '');
+  if (!cleanTitle && !cleanQid) return { ok: false, error: 'Missing title' };
 
   const lang = preferredLang === 'en' ? 'en' : 'zh';
   const cacheKey = crypto
     .createHash('sha1')
-    .update(`v2:${lang}:${cleanTitle.toLowerCase()}|fb:${cleanFallback.toLowerCase()}`)
+    .update(`v3:${lang}:${cleanTitle.toLowerCase()}|fb:${cleanFallback.toLowerCase()}|qid:${cleanQid}`)
     .digest('hex');
   const cacheFile = path.join(WIKI_CACHE_DIR, `${cacheKey}.json`);
 
@@ -1404,42 +1828,57 @@ async function getWikiDossier(rawTitle, preferredLang, rawFallback) {
     return cached;
   }
 
-  const isLatinQuery =
-    !/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(cleanTitle) &&
-    /[A-Za-z\u00C0-\u024F]/.test(cleanTitle);
-  const allowTaxonomy = /微距|野生|动物|昆虫|鸟|植物|珊瑚|物种|biology|macro|wildlife|species/i.test(`${cleanTitle} ${cleanFallback}`);
+  const allowTaxonomy = /微距|野生|动物|昆虫|鸟|植物|珊瑚|海蛞蝓|水母|物种|biology|macro|wildlife|species|taxon/i.test(
+    `${cleanTitle} ${cleanFallback}`
+  );
   let result = null;
 
-  if (isLatinQuery) {
-    // 英文/欧洲变音/拼音检索词（如 "Song Xu"、"Urban Hörle"、"Celadon"）先走英文维基精确/标题匹配，经跨语言链接跳中文，杜绝中文全文撞参考文献
-    const enRes = await queryWikiHost('en', cleanTitle, { wantZhLink: lang === 'zh', allowTaxonomy });
-    if (enRes) {
-      // 仅在英文维基存在官方同实体 Wikidata 跨语言链接（zhLanglink）时跳中文，防止同名古人串台（如画家宋旭 1525 vs 进士宋旭 1429）
-      if (lang === 'zh' && enRes.zhLanglink) {
-        const zhExact = await queryWikiHost('zh', enRes.zhLanglink, { exactOnly: true, allowTaxonomy });
-        if (zhExact) result = zhExact;
-      }
-      if (!result) result = enRes;
-    } else if (lang === 'zh') {
-      result = await queryWikiHost('zh', cleanTitle, { exactOnly: true, allowTaxonomy });
+  // 0. 若作品携带官方 Wikidata QID（如大都会博物馆 objectWikidata_URL），优先直取精确绑定词条，杜绝同名异义
+  if (cleanQid) {
+    const qidTarget = await resolveWikidataQidTitle(cleanQid, lang);
+    if (qidTarget && qidTarget.title) {
+      result = await queryWikiHost(qidTarget.lang, qidTarget.title, { exactOnly: true, allowTaxonomy: true });
+      if (result) result.wikidataQid = cleanQid;
     }
-  } else {
-    result = await queryWikiHost(lang, cleanTitle, { allowTaxonomy });
-    if (!result && lang === 'zh') {
-      result = await queryWikiHost('en', cleanTitle, { allowTaxonomy });
+  }
+
+  const isLatinQuery =
+    cleanTitle &&
+    !/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(cleanTitle) &&
+    /[A-Za-z\u00C0-\u024F]/.test(cleanTitle);
+
+  if (!result && cleanTitle) {
+    if (isLatinQuery) {
+      // 英文/欧洲变音/拼音检索词（如 "Song Xu"、"Urban Hörle"、"Celadon"）先走英文维基精确/标题匹配，经跨语言链接跳中文，杜绝中文全文撞参考文献
+      const enRes = await queryWikiHost('en', cleanTitle, { wantZhLink: lang === 'zh', allowTaxonomy });
+      if (enRes) {
+        // 仅在英文维基存在官方同实体 Wikidata 跨语言链接（zhLanglink）时跳中文，防止同名古人串台（如画家宋旭 1525 vs 进士宋旭 1429）
+        if (lang === 'zh' && enRes.zhLanglink) {
+          const zhExact = await queryWikiHost('zh', enRes.zhLanglink, { exactOnly: true, allowTaxonomy });
+          if (zhExact) result = zhExact;
+        }
+        if (!result) result = enRes;
+      } else if (lang === 'zh') {
+        result = await queryWikiHost('zh', cleanTitle, { exactOnly: true, allowTaxonomy });
+      }
+    } else {
+      result = await queryWikiHost(lang, cleanTitle, { allowTaxonomy });
+      if (!result && lang === 'zh') {
+        result = await queryWikiHost('en', cleanTitle, { allowTaxonomy });
+      }
     }
   }
 
   // 若具体画作标题/生僻工匠无同名百科条目（如 "Mt. Daochang"、"P. Herbier"），平滑回退至专题或器物时代/窑口/门类词条
   if (!result && cleanFallback && cleanFallback.toLowerCase() !== cleanTitle.toLowerCase()) {
-    const fbRes = await getWikiDossier(cleanFallback, preferredLang, '');
+    const fbRes = await getWikiDossier(cleanFallback, preferredLang, '', '');
     if (fbRes && fbRes.ok) {
       result = Object.assign({}, fbRes, { fallbackFrom: cleanTitle });
     }
   }
 
   if (!result) {
-    return { ok: false, error: '未检索到对应维基词条', title: cleanTitle };
+    return { ok: false, error: '未检索到对应维基词条', title: cleanTitle || cleanQid };
   }
 
   result.cachedAt = Date.now();
@@ -1579,23 +2018,27 @@ async function refreshLivePool(prefs, seenMap) {
   const randSeed = Math.floor(Math.random() * 35);
 
   const tasks = [];
-  const antTerms = extractEnglishTerms((chMap.antiques && chMap.antiques.query) + ' ' + note, ['celadon', 'iridescent glass', 'jade', 'porcelain']);
+  const antTerms = extractEnglishTerms((chMap.antiques && chMap.antiques.query) + ' ' + note, ['celadon', 'astrolabe', 'jade', 'porcelain']);
   const artTerms = extractEnglishTerms((chMap.paintings && chMap.paintings.query) + ' ' + note, ['Monet', 'Impressionism', 'Hokusai', 'watercolor']);
-  const landTerms = extractEnglishTerms((chMap.landscapes && chMap.landscapes.query) + ' ' + note, ['glacier', 'aurora borealis', 'fjord', 'alpine lake']);
-  const cosTerms = extractEnglishTerms((chMap.cosmos && chMap.cosmos.query) + ' ' + note, ['nebula Hubble', 'spiral galaxy', 'mineral crystal']);
+  const landTerms = extractEnglishTerms((chMap.landscapes && chMap.landscapes.query) + ' ' + note, ['glacier', 'aurora borealis', 'fjord', 'kingfisher']);
+  const cosTerms = extractEnglishTerms((chMap.cosmos && chMap.cosmos.query) + ' ' + note, ['Carina Nebula', 'spiral galaxy', 'mineral crystal']);
 
   if (!chMap.antiques || Number(chMap.antiques.weight) > 0) {
+    tasks.push(fetchMetChannel('antiques', antTerms, randSeed).catch(() => []));
     tasks.push(fetchCmaChannel('antiques', antTerms, randSeed).catch(() => []));
   }
   if (!chMap.paintings || Number(chMap.paintings.weight) > 0) {
+    tasks.push(fetchMetChannel('paintings', artTerms, randSeed).catch(() => []));
     tasks.push(fetchCmaChannel('paintings', artTerms, randSeed).catch(() => []));
     tasks.push(fetchAicChannel('paintings', artTerms.join(' '), randSeed).catch(() => []));
   }
   if (!chMap.landscapes || Number(chMap.landscapes.weight) > 0) {
     tasks.push(fetchCommonsFeatured('landscapes', landTerms, randSeed).catch(() => []));
+    tasks.push(fetchINaturalistChannel('landscapes', landTerms, randSeed).catch(() => []));
     tasks.push(ensureEarthViewPool().then((pool) => sampleEarthViewItems(pool, 6, null, new Set(Object.keys(seenMap || {})))).catch(() => []));
   }
   if (!chMap.cosmos || Number(chMap.cosmos.weight) > 0) {
+    tasks.push(fetchNasaChannel('cosmos', cosTerms, randSeed).catch(() => []));
     tasks.push(fetchCommonsFeatured('cosmos', cosTerms, randSeed).catch(() => []));
   }
 
@@ -1616,6 +2059,7 @@ async function refreshLivePool(prefs, seenMap) {
     .sort((a, b) => ((seenMap[a.id] ? 1 : 0) - (seenMap[b.id] ? 1 : 0)))
     .slice(0, 220);
 
+  upsertPearlsVault(merged);
   writeJsonSafe(LIVE_POOL_JSON, merged);
   return merged;
 }
@@ -1708,7 +2152,10 @@ function listCuratedPagesMeta() {
     for (const f of files) {
       const p = readJsonSafe(path.join(PAGES_DIR, f), null);
       if (!p || !p.slug || !p.title) continue;
-      const firstImg = Array.isArray(p.items) && p.items[0] ? (p.items[0].thumbUrl || p.items[0].previewUrl || '') : '';
+      const itemsArr = Array.isArray(p.items) ? p.items : [];
+      const visualCover = itemsArr.find((it) => it && it.kind !== 'quote' && it.kind !== 'wiki' && (it.thumbUrl || it.previewUrl)) ||
+        itemsArr.find((it) => it && (it.thumbUrl || it.previewUrl));
+      const firstImg = visualCover ? (visualCover.thumbUrl || visualCover.previewUrl || '') : '';
       pages.push({
         slug: p.slug,
         title: p.title,
@@ -1716,7 +2163,8 @@ function listCuratedPagesMeta() {
         note: p.note || '',
         author: p.author || 'Fable',
         wikiTitle: p.wikiTitle || '',
-        count: Array.isArray(p.items) ? p.items.length : 0,
+        count: itemsArr.length,
+        itemCount: itemsArr.length,
         coverUrl: p.coverUrl || firstImg,
         createdAt: p.createdAt || '',
         updatedAt: p.updatedAt || '',
@@ -1731,89 +2179,615 @@ function listCuratedPagesMeta() {
   }
 }
 
-async function curateItemsByKeywords(keywordsInput, domainPref, wikiHint) {
-  const rawKw = Array.isArray(keywordsInput) ? keywordsInput.join(' ') : String(keywordsInput || '').trim();
-  const enTerms = extractEnglishTerms(rawKw, []);
-  const extraMap = [
-    [/微距|昆虫|露珠|晶|雪花|蝴蝶|蜻蜓/, ['macro', 'snowflake', 'butterfly', 'quartz crystal']],
-    [/野生|动物|鸟|狐|鲸|豹|生灵|国家地理/, ['kingfisher', 'fox', 'owl', 'leopard', 'hummingbird']],
-    [/森林|瀑布|雨林|溪谷|苔藓|竹/, ['waterfall', 'forest', 'moss', 'redwood']],
-    [/极光|冰川|峡湾|极地|雪山/, ['aurora', 'glacier', 'iceberg', 'Dolomites']],
-    [/海洋|珊瑚|环礁|水母|海浪/, ['coral reef', 'jellyfish', 'lagoon', 'sea arch']],
-    [/火山|沙漠|风暴|闪电|盐沼/, ['volcano', 'lava', 'supercell', 'sand dunes']],
-    [/星云|宇宙|星系|深空|韦伯/, ['nebula', 'James Webb', 'spiral galaxy']],
-    [/宋|青瓷|汝窑|秘色|影青|瓷/, ['Song dynasty', 'celadon', 'porcelain']],
-    [/青花|元代|明代|景德镇/, ['blue and white porcelain', 'Ming dynasty']],
-    [/山水|水墨|手卷|册页|书画/, ['Chinese landscape scroll', 'handscroll', 'ink painting']],
-    [/浮世绘|北斋|广重|江户/, ['ukiyo-e', 'Hokusai', 'Hiroshige']],
-    [/印象派|莫奈|睡莲|梵高|雷诺阿/, ['Claude Monet', 'Impressionism', 'Vincent van Gogh']],
-    [/埃及|法老|莎草纸/, ['Ancient Egypt', 'faience']],
-    [/波斯|细密画|伊斯兰/, ['Persian miniature', 'Nishapur']],
-    [/希腊|罗马|大理石|青铜/, ['Greek amphora', 'Roman marble', 'bronze']]
-  ];
-  for (const [re, mapped] of extraMap) {
-    if (re.test(rawKw)) {
+// ==================== 珍珠母库 (Pearls Vault) + 14天策展冷却去重 + 混合叙事流编排 ====================
+const COOLING_WINDOW_MS = 14 * 86400 * 1000;
+let vaultMemCache = null;
+
+function collectProtectedPearlIds() {
+  const keep = new Set();
+  try {
+    readFavoritesList().forEach((it) => { if (it && it.id) keep.add(it.id); });
+    if (fs.existsSync(PAGES_DIR)) {
+      for (const f of fs.readdirSync(PAGES_DIR).filter((x) => x.endsWith('.json'))) {
+        const p = readJsonSafe(path.join(PAGES_DIR, f), null);
+        if (p && Array.isArray(p.items)) {
+          p.items.forEach((it) => { if (it && it.id) keep.add(it.id); });
+        }
+      }
+    }
+  } catch (_) {}
+  return keep;
+}
+
+function readPearlsVaultMap() {
+  if (vaultMemCache) return vaultMemCache;
+  const raw = readJsonSafe(PEARLS_VAULT_JSON, { updatedAt: null, items: {} });
+  vaultMemCache = (raw && raw.items && typeof raw.items === 'object') ? raw.items : {};
+  return vaultMemCache;
+}
+
+function upsertPearlsVault(itemsList) {
+  if (!Array.isArray(itemsList) || !itemsList.length) return;
+  const vault = readPearlsVaultMap();
+  const nowTs = Date.now();
+  let changed = false;
+  for (const rawIt of itemsList) {
+    if (!rawIt || !rawIt.id || rawIt.kind === 'wiki' || rawIt.kind === 'quote') continue;
+    const norm = normalizeLiveItem(rawIt);
+    if (!norm || !norm.id || !(norm.fullUrl || norm.previewUrl || norm.thumbUrl)) continue;
+    const cleanCopy = Object.assign({}, norm);
+    delete cleanCopy.fableCaption;
+    delete cleanCopy.caption;
+    cleanCopy.indexedAt = (vault[norm.id] && vault[norm.id].indexedAt) || nowTs;
+    vault[norm.id] = cleanCopy;
+    changed = true;
+  }
+  if (!changed) return;
+
+  const keys = Object.keys(vault);
+  if (keys.length > 3600) {
+    const protectedIds = collectProtectedPearlIds();
+    const removable = keys
+      .filter((k) => !protectedIds.has(k))
+      .sort((a, b) => Number((vault[a] && vault[a].indexedAt) || 0) - Number((vault[b] && vault[b].indexedAt) || 0));
+    const dropCount = keys.length - 3200;
+    for (let i = 0; i < dropCount && i < removable.length; i++) {
+      delete vault[removable[i]];
+    }
+  }
+  writeJsonSafe(PEARLS_VAULT_JSON, {
+    updatedAt: new Date().toISOString(),
+    count: Object.keys(vault).length,
+    items: vault
+  });
+}
+
+function readCollectionHistory() {
+  let hist = readJsonSafe(COLLECTION_HISTORY_JSON, null);
+  if (!hist || typeof hist.items !== 'object') {
+    hist = { updatedAt: new Date().toISOString(), items: {} };
+    // 首次初始化时扫描现有专题页落入历史账本
+    try {
+      if (fs.existsSync(PAGES_DIR)) {
+        for (const f of fs.readdirSync(PAGES_DIR).filter((x) => x.endsWith('.json'))) {
+          const p = readJsonSafe(path.join(PAGES_DIR, f), null);
+          if (p && p.slug && Array.isArray(p.items)) {
+            const ts = Date.parse(p.updatedAt || p.createdAt || '') || Date.now();
+            for (const it of p.items) {
+              if (!it || !it.id || it.kind === 'wiki' || it.kind === 'quote') continue;
+              const cur = hist.items[it.id] || { count: 0, lastUsedAt: 0, slugs: [] };
+              cur.count += 1;
+              cur.lastUsedAt = Math.max(cur.lastUsedAt || 0, ts);
+              if (!cur.slugs.includes(p.slug)) cur.slugs.push(p.slug);
+              hist.items[it.id] = cur;
+            }
+          }
+        }
+      }
+      writeJsonSafe(COLLECTION_HISTORY_JSON, hist);
+    } catch (_) {}
+  }
+  return hist;
+}
+
+function recordCollectionUsage(slug, itemsList) {
+  if (!slug || !Array.isArray(itemsList)) return;
+  const hist = readCollectionHistory();
+  const nowTs = Date.now();
+  for (const it of itemsList) {
+    if (!it || !it.id || it.kind === 'wiki' || it.kind === 'quote') continue;
+    const cur = hist.items[it.id] || { count: 0, lastUsedAt: 0, slugs: [] };
+    if (!cur.slugs.includes(slug)) {
+      cur.count = Number(cur.count || 0) + 1;
+      cur.slugs.push(slug);
+    }
+    cur.lastUsedAt = nowTs;
+    cur.title = String(it.title || '').slice(0, 80);
+    hist.items[it.id] = cur;
+  }
+  hist.updatedAt = new Date().toISOString();
+  writeJsonSafe(COLLECTION_HISTORY_JSON, hist);
+}
+
+async function hydrateSinglePearlById(rawId) {
+  const id = String(rawId || '').trim();
+  if (!id) return null;
+  const vault = readPearlsVaultMap();
+  if (vault[id]) return normalizeLiveItem(vault[id]);
+
+  const favHit = readFavoritesList().find((x) => x && x.id === id);
+  if (favHit) {
+    upsertPearlsVault([favHit]);
+    return favHit;
+  }
+
+  const livePool = readJsonSafe(LIVE_POOL_JSON, []);
+  if (Array.isArray(livePool)) {
+    const lpHit = livePool.find((x) => x && x.id === id);
+    if (lpHit) {
+      const norm = normalizeLiveItem(lpHit);
+      upsertPearlsVault([norm]);
+      return norm;
+    }
+  }
+
+  try {
+    if (fs.existsSync(PAGES_DIR)) {
+      for (const f of fs.readdirSync(PAGES_DIR).filter((x) => x.endsWith('.json'))) {
+        const p = readJsonSafe(path.join(PAGES_DIR, f), null);
+        const hit = p && Array.isArray(p.items) ? p.items.find((x) => x && x.id === id) : null;
+        if (hit) {
+          const norm = normalizeLiveItem(hit);
+          upsertPearlsVault([norm]);
+          return norm;
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 冷门/未入库三馆 ID 实时回源补全
+  let upstream = null;
+  if (id.startsWith('met-live-')) {
+    upstream = await fetchMetObjectById(id.slice('met-live-'.length), 'antiques', null).catch(() => null);
+  } else if (id.startsWith('cma-live-')) {
+    upstream = await fetchCmaObjectById(id.slice('cma-live-'.length), 'antiques', { curated: true }).catch(() => null);
+  } else if (id.startsWith('aic-live-')) {
+    upstream = await fetchAicObjectById(id.slice('aic-live-'.length), 'paintings', null).catch(() => null);
+  }
+  if (upstream) {
+    const norm = normalizeLiveItem(upstream);
+    upsertPearlsVault([norm]);
+    return norm;
+  }
+  return null;
+}
+
+const CURATE_CONCEPT_MAP = [
+  [/星盘|占星|天球|天文仪/, ['astrolabe', 'celestial globe']],
+  [/浑天仪|浑仪|赤道仪|圭表/, ['armillary sphere', 'equatorial sundial']],
+  [/日晷|沙漏|钟表|怀表|擒纵|时计|机械钟/, ['sundial', 'pocket watch', 'automaton clock', 'hourglass']],
+  [/微距|昆虫|露珠|晶|雪花|蝴蝶|蜻蜓|甲虫/, ['macro butterfly', 'snowflake crystal', 'dragonfly', 'quartz crystal']],
+  [/野生|动物|鸟|狐|鲸|豹|生灵|国家地理|蜂鸟|翠鸟/, ['kingfisher', 'arctic fox', 'snowy owl', 'hummingbird']],
+  [/海蛞蝓|水母|深海|章鱼|海马/, ['nudibranch', 'jellyfish', 'seahorse']],
+  [/森林|瀑布|雨林|溪谷|苔藓|竹|红杉/, ['waterfall canyon', 'moss forest', 'redwood']],
+  [/极光|冰川|峡湾|极地|雪山/, ['aurora borealis', 'glacier fjord', 'Dolomites']],
+  [/海洋|珊瑚|环礁|海浪/, ['coral reef', 'atoll lagoon', 'sea arch']],
+  [/火山|沙漠|风暴|闪电|盐沼/, ['volcano lava', 'supercell lightning', 'salt flat']],
+  [/星云|宇宙|星系|深空|韦伯|哈勃|超新星/, ['Carina Nebula', 'James Webb galaxy', 'Pillars of Creation']],
+  [/宋|青瓷|汝窑|秘色|影青|龙泉|瓷/, ['Song dynasty celadon', 'Longquan porcelain']],
+  [/青花|元代|明代|景德镇/, ['blue and white porcelain', 'Ming dynasty']],
+  [/山水|水墨|手卷|册页|书画/, ['Chinese landscape handscroll', 'ink painting']],
+  [/青铜|商周|鼎|爵|尊/, ['ritual bronze vessel', 'Shang dynasty']],
+  [/浮世绘|北斋|广重|江户/, ['ukiyo-e', 'Hokusai', 'Hiroshige']],
+  [/印象派|莫奈|睡莲|梵高|雷诺阿/, ['Claude Monet', 'Impressionism', 'Vincent van Gogh']],
+  [/埃及|法老|莎草纸|圣甲虫/, ['Ancient Egypt faience', 'papyrus']],
+  [/波斯|细密画|伊斯兰|琉璃/, ['Persian miniature', 'Islamic brass']],
+  [/希腊|罗马|大理石|陶瓶/, ['Greek amphora', 'Roman marble']]
+];
+
+function expandSubQueryToTerms(subQ) {
+  const raw = String(subQ || '').trim();
+  const enTerms = extractEnglishTerms(raw, []);
+  for (const [re, mapped] of CURATE_CONCEPT_MAP) {
+    if (re.test(raw)) {
       for (const m of mapped) {
         if (!enTerms.includes(m)) enTerms.push(m);
       }
     }
   }
-  const expandedTerms = [];
+  const phrases = [];
   for (const t of enTerms) {
-    const words = String(t).trim().split(/\s+/).filter(Boolean);
-    if (words.length <= 2) {
-      if (!expandedTerms.includes(t)) expandedTerms.push(t);
+    const clean = String(t).trim();
+    if (!clean) continue;
+    const words = clean.split(/\s+/).filter(Boolean);
+    if (words.length <= 3) {
+      if (!phrases.includes(clean)) phrases.push(clean);
     } else {
+      phrases.push(words.slice(0, 2).join(' '));
       for (const w of words) {
-        if (w.length >= 3 && !/^(and|the|with|from|for|into)$/i.test(w) && !expandedTerms.includes(w)) {
-          expandedTerms.push(w);
+        if (w.length >= 4 && !/^(and|the|with|from|into)$/i.test(w) && !phrases.includes(w)) {
+          phrases.push(w);
         }
       }
     }
   }
-  const finalTerms = expandedTerms.length ? expandedTerms.slice(0, 6) : [rawKw || 'masterpiece'];
-  const isMuseumCue = /宋|唐|明|清|瓷|窑|玉|青铜|书画|手卷|浮世绘|印象派|博物馆|celadon|porcelain|dynasty|scroll|bronze|painting|ukiyo|monet/i.test(rawKw);
-  const isLandscape = domainPref === 'landscape' || (!isMuseumCue && /微距|野生|动物|森林|瀑布|极光|冰川|海洋|火山|星云|风景|自然|landscape|macro|wildlife|aurora|nebula|forest|glacier/i.test(rawKw));
-  const seed = Math.floor(Math.random() * 4);
-  const meta = {
-    facet: 'curated',
-    label: wikiHint || rawKw.slice(0, 18) || '专题特辑',
-    wikiTitle: wikiHint || rawKw.split(/[\s,，·]+/)[0] || ''
-  };
+  return phrases.length ? phrases.slice(0, 5) : [raw || 'masterpiece'];
+}
 
-  const tasks = [];
-  if (domainPref === 'landscape') {
-    tasks.push(fetchCommonsFeatured('landscapes', finalTerms, seed, meta).catch(() => []));
-    tasks.push(fetchCommonsFeatured('landscapes', finalTerms, seed + 1, meta).catch(() => []));
-  } else if (domainPref === 'museum') {
-    tasks.push(fetchCmaChannel('antiques', finalTerms, 0, meta).catch(() => []));
-    if (finalTerms.length > 1) tasks.push(fetchCmaChannel('paintings', finalTerms, 1, meta).catch(() => []));
-    // fetchAicChannel 的第 3 个参数是偏移（0 → page=1）；传 1 会落到 page=2，正好跳过真正搜中的第 1 页。
-    tasks.push(fetchAicChannel('paintings', finalTerms.slice(0, 3).join(' '), 0, meta).catch(() => []));
-  } else if (isLandscape) {
-    tasks.push(fetchCommonsFeatured('landscapes', finalTerms, seed, meta).catch(() => []));
-    tasks.push(fetchCommonsFeatured('landscapes', finalTerms, seed + 1, meta).catch(() => []));
-    tasks.push(fetchCmaChannel('paintings', finalTerms, 0, meta).catch(() => []));
-  } else {
-    tasks.push(fetchCmaChannel('antiques', finalTerms, 0, meta).catch(() => []));
-    if (finalTerms.length > 1) tasks.push(fetchCmaChannel('paintings', finalTerms, 1, meta).catch(() => []));
-    tasks.push(fetchAicChannel('paintings', finalTerms.slice(0, 3).join(' '), 0, meta).catch(() => []));
-    tasks.push(fetchCommonsFeatured('landscapes', finalTerms, 0, meta).catch(() => []));
+function makeArtworkDedupeFingerprint(it) {
+  const normTitle = String(it.title || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '')
+    .slice(0, 38);
+  const creatorChunk = String((it.subtitle || '').split('·')[0] || it.enTitle || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '')
+    .slice(0, 18);
+  if (!normTitle || normTitle.length < 4 || /^(untitled|plate|fragment|bowl|dish|vase|jar)$/.test(normTitle)) {
+    return `id:${it.id}`;
   }
+  return `fp:${normTitle}|${creatorChunk}`;
+}
 
-  const batches = await Promise.all(tasks);
-  const seen = new Set();
-  const out = [];
-  for (const b of batches) {
-    for (const rawIt of b) {
-      const it = normalizeLiveItem(rawIt);
-      if (it && it.id && !seen.has(it.id)) {
-        seen.add(it.id);
-        out.push(it);
+function scoreAndFilterCandidates(rawList, allQueryTerms, opts = {}) {
+  const hist = readCollectionHistory().items || {};
+  const favSet = new Set(readFavoritesList().map((x) => x && x.id).filter(Boolean));
+  const nowTs = Date.now();
+  const includeCooled = Boolean(opts.includeCooled);
+  const strictRelevance = opts.strictRelevance !== false;
+  const maxItems = Number(opts.limit || 16);
+
+  // 拆出小写检索词根用于相关性打分
+  const phrasesL = [];
+  const wordsL = [];
+  for (const t of (allQueryTerms || [])) {
+    const tl = String(t || '').trim().toLowerCase();
+    if (!tl) continue;
+    if (tl.includes(' ') && !phrasesL.includes(tl)) phrasesL.push(tl);
+    for (const w of tl.split(/[\s,，·/|-]+/)) {
+      if (w.length >= 3 && !/^(and|the|with|from|for|into|art|museum)$/i.test(w) && !wordsL.includes(w)) {
+        wordsL.push(w);
+      } else if (/^[\u4e00-\u9fa5]{2,}$/.test(w) && !wordsL.includes(w)) {
+        wordsL.push(w);
       }
     }
   }
-  return out.slice(0, 24);
+
+  const seenId = new Set();
+  const seenFp = new Set();
+  const scored = [];
+
+  for (const rawIt of (rawList || [])) {
+    const it = normalizeLiveItem(rawIt);
+    if (!it || !it.id || seenId.has(it.id)) continue;
+    if (!(it.fullUrl || it.previewUrl || it.thumbUrl)) continue;
+    seenId.add(it.id);
+
+    const fp = makeArtworkDedupeFingerprint(it);
+    if (seenFp.has(fp)) continue;
+    seenFp.add(fp);
+
+    const titleL = String(it.title || '').toLowerCase();
+    const intrinsicTags = Array.isArray(it.tags) ? it.tags.slice(1).join(' ') : '';
+    const subL = String(`${it.enTitle || ''} ${it.subtitle || ''} ${intrinsicTags} ${it.wikiTitle || ''}`).toLowerCase();
+    const storyL = String(it.story || '').toLowerCase();
+
+    let relScore = 0;
+    for (const ph of phrasesL) {
+      if (titleL.includes(ph)) relScore += 6.5;
+      else if (subL.includes(ph)) relScore += 4.2;
+      else if (storyL.includes(ph)) relScore += 2.2;
+    }
+    for (const w of wordsL) {
+      if (titleL.includes(w)) relScore += 3.6;
+      else if (subL.includes(w)) relScore += 2.1;
+      else if (storyL.includes(w)) relScore += 0.9;
+    }
+
+    if (strictRelevance && wordsL.length > 0 && relScore < 0.85) {
+      continue;
+    }
+
+    const fav = favSet.has(it.id);
+    const hRec = hist[it.id];
+    const cooled = Boolean(!fav && hRec && hRec.lastUsedAt && (nowTs - hRec.lastUsedAt < COOLING_WINDOW_MS));
+    if (cooled && !includeCooled && opts.dropCooledHard) {
+      continue;
+    }
+
+    let finalScore = relScore;
+    if (it.resBadge === '4K') finalScore += 0.65;
+    else if (it.resBadge === '2K') finalScore += 0.35;
+    if (it.wikidataQid) finalScore += 0.25;
+    if (fav) finalScore += 0.45;
+    if (cooled) finalScore -= 6.0;
+
+    scored.push({
+      it,
+      relScore,
+      finalScore,
+      favorited: fav,
+      cooled,
+      usedCount: (hRec && hRec.count) || 0
+    });
+  }
+
+  // 按相关性与去重冷却排序，并适度交错不同图源避免单一博物馆刷屏
+  scored.sort((a, b) => b.finalScore - a.finalScore);
+  const freshOnes = scored.filter((x) => !x.cooled);
+  const activePool = (!includeCooled && freshOnes.length >= Math.min(5, maxItems)) ? freshOnes : scored;
+
+  const sourceBuckets = new Map();
+  for (const row of activePool) {
+    const src = row.it.sourceName || 'Other';
+    if (!sourceBuckets.has(src)) sourceBuckets.set(src, []);
+    sourceBuckets.get(src).push(row);
+  }
+
+  const interleaved = [];
+  let round = 0;
+  while (interleaved.length < maxItems) {
+    let progressed = false;
+    for (const [, arr] of sourceBuckets) {
+      if (round < arr.length) {
+        interleaved.push(arr[round]);
+        progressed = true;
+        if (interleaved.length >= maxItems) break;
+      }
+    }
+    if (!progressed) break;
+    round++;
+  }
+  return interleaved;
+}
+
+async function runMultiSourceProbeForSubQuery(subQ, domainPref, wikiHint) {
+  const terms = expandSubQueryToTerms(subQ);
+  const isCosmosCue = /星云|宇宙|星系|深空|韦伯|哈勃|超新星|轨道|nebula|galaxy|webb|hubble|supernova|nasa|aurora iss/i.test(subQ);
+  const isBioCue = /微距|昆虫|蝴蝶|蜻蜓|甲虫|野生|动物|鸟|狐|鲸|豹|蜂鸟|翠鸟|海蛞蝓|水母|珊瑚|植物|花|菌|macro|butterfly|dragonfly|kingfisher|owl|fox|nudibranch|jellyfish|coral|species|hummingbird/i.test(subQ);
+  const isLandCue = isCosmosCue || isBioCue || /森林|瀑布|雨林|溪谷|极光|冰川|峡湾|雪山|火山|沙漠|风暴|闪电|盐沼|风景|自然|landscape|waterfall|glacier|fjord|aurora|volcano|canyon|mountain/i.test(subQ);
+  const isMuseumCue = /宋|唐|明|清|瓷|窑|玉|青铜|书画|手卷|浮世绘|印象派|星盘|浑天仪|日晷|钟表|怀表|埃及|波斯|希腊|罗马|博物馆|astrolabe|armillary|sundial|watch|clock|celadon|porcelain|dynasty|scroll|bronze|painting|ukiyo|monet|faience|miniature|marble/i.test(subQ);
+
+  const meta = {
+    curated: true,
+    facet: 'curated',
+    label: '',
+    wikiTitle: wikiHint || ''
+  };
+
+  const tasks = [];
+  if (domainPref === 'landscape' || (isLandCue && !isMuseumCue)) {
+    tasks.push(fetchCommonsFeatured(isCosmosCue ? 'cosmos' : 'landscapes', terms, 0, meta).catch(() => []));
+    if (isBioCue || domainPref === 'landscape') {
+      tasks.push(fetchINaturalistChannel('landscapes', terms, 0, meta).catch(() => []));
+    }
+    if (isCosmosCue) {
+      tasks.push(fetchNasaChannel('cosmos', terms, 0, meta).catch(() => []));
+    }
+  } else if (domainPref === 'museum' || (isMuseumCue && !isLandCue)) {
+    tasks.push(fetchMetChannel('antiques', terms, 0, meta).catch(() => []));
+    tasks.push(fetchCmaChannel('antiques', terms, 0, meta).catch(() => []));
+    tasks.push(fetchAicChannel('paintings', terms.slice(0, 2).join(' '), 0, meta).catch(() => []));
+  } else {
+    // 跨界或未指明领域：博物馆三巨头 + Commons / iNat / NASA 并行探针
+    tasks.push(fetchMetChannel('antiques', terms, 0, meta).catch(() => []));
+    tasks.push(fetchCmaChannel('antiques', terms, 0, meta).catch(() => []));
+    tasks.push(fetchAicChannel('paintings', terms.slice(0, 2).join(' '), 0, meta).catch(() => []));
+    tasks.push(fetchCommonsFeatured('landscapes', terms, 0, meta).catch(() => []));
+    if (isBioCue) tasks.push(fetchINaturalistChannel('landscapes', terms, 0, meta).catch(() => []));
+    if (isCosmosCue) tasks.push(fetchNasaChannel('cosmos', terms, 0, meta).catch(() => []));
+  }
+
+  const batches = await Promise.all(tasks);
+  return { terms, items: [].concat(...batches) };
+}
+
+async function searchPearlsLightweight(rawQuery, opts = {}) {
+  const qStr = String(rawQuery || '').trim();
+  if (!qStr) return { ok: false, error: 'Missing query parameter q', pearls: [] };
+  const subQueries = qStr.split(/\s*\|\s*/).map((s) => s.trim()).filter(Boolean).slice(0, 5);
+  const limit = Math.max(4, Math.min(36, Number(opts.limit || 18)));
+  const perSubLimit = Math.max(5, Math.ceil(limit / Math.max(1, subQueries.length)) + 2);
+
+  const probeResults = await Promise.all(
+    subQueries.map((sq) => runMultiSourceProbeForSubQuery(sq, opts.domain || '', opts.wiki || ''))
+  );
+
+  const allFetched = [];
+  const subBuckets = [];
+
+  for (let i = 0; i < probeResults.length; i++) {
+    const { terms, items } = probeResults[i];
+    allFetched.push(...items);
+    const ranked = scoreAndFilterCandidates(items, terms.concat([subQueries[i]]), {
+      limit: perSubLimit,
+      includeCooled: opts.includeCooled,
+      strictRelevance: true
+    });
+    subBuckets.push(ranked);
+  }
+
+  const mergedRows = [];
+  const globalSeen = new Set();
+  let roundIdx = 0;
+  while (mergedRows.length < limit) {
+    let addedInRound = false;
+    for (const bucket of subBuckets) {
+      if (roundIdx < bucket.length) {
+        const r = bucket[roundIdx];
+        if (!globalSeen.has(r.it.id)) {
+          globalSeen.add(r.it.id);
+          mergedRows.push(r);
+          if (mergedRows.length >= limit) break;
+        }
+        addedInRound = true;
+      }
+    }
+    if (!addedInRound) break;
+    roundIdx++;
+  }
+
+  // 所有搜出来的完整作品自动沉入本地 pearls-vault.json，后续凭短 ID 秒取
+  upsertPearlsVault(allFetched);
+
+  const compactPearls = mergedRows.slice(0, limit).map(({ it, favorited, cooled, usedCount }) => {
+    const dim = (it.width && it.height) ? `${it.resBadge || 'HD'} (${it.width}×${it.height})` : (it.resBadge || 'HD');
+    return {
+      id: it.id,
+      source: it.sourceName || 'Museum',
+      channel: it.channel || 'antiques',
+      title: String(it.title || '').slice(0, 86),
+      meta: String(it.subtitle || it.enTitle || (it.meta || []).slice(0, 2).join(' · ')).slice(0, 96),
+      res: dim,
+      wiki: it.wikiTitle || '',
+      qid: it.wikidataQid || '',
+      favorited,
+      cooled,
+      ...(usedCount ? { usedCount } : {})
+    };
+  });
+
+  return {
+    ok: true,
+    query: qStr,
+    count: compactPearls.length,
+    vaultTotal: Object.keys(readPearlsVaultMap()).length,
+    pearls: compactPearls
+  };
+}
+
+async function hydrateCuratedPearlsSpec(specList, defaultWikiFallback, authorName) {
+  if (!Array.isArray(specList) || !specList.length) return [];
+  const out = [];
+  for (let idx = 0; idx < specList.length; idx++) {
+    const spec = specList[idx];
+    if (!spec) continue;
+
+    // 1. 纯字符串短 ID："met-live-444854"
+    if (typeof spec === 'string') {
+      const hydrated = await hydrateSinglePearlById(spec);
+      if (hydrated) {
+        if (defaultWikiFallback && !hydrated.wikiFallback) hydrated.wikiFallback = defaultWikiFallback;
+        out.push(hydrated);
+      }
+      continue;
+    }
+
+    if (typeof spec !== 'object') continue;
+
+    // 2. 维基百科知识切片卡：{ kind: "wiki", wiki: "星盘", title?: "...", caption?: "...", qid?: "Q..." }
+    if (spec.kind === 'wiki') {
+      const targetWiki = String(spec.wiki || spec.wikiTitle || spec.title || '').trim();
+      const qid = extractWikidataQid(spec.qid || spec.wikidataQid || '');
+      if (!targetWiki && !qid) continue;
+      const dossier = await getWikiDossier(targetWiki, spec.lang || 'zh', defaultWikiFallback || '', qid).catch(() => null);
+      const summaryParas = (dossier && dossier.ok && Array.isArray(dossier.summary)) ? dossier.summary : [];
+      let extract = String(spec.extract || spec.wikiExtract || '').trim();
+      if (!extract && summaryParas.length) {
+        extract = summaryParas.slice(0, 2).join('\n\n').slice(0, 420);
+      }
+      const displayTitle = String(spec.title || (dossier && dossier.ok && dossier.title) || targetWiki).trim();
+      const resolvedWikiTitle = (dossier && dossier.ok && dossier.title) || targetWiki || displayTitle;
+      const hash8 = crypto.createHash('sha1').update(`wiki:${resolvedWikiTitle}:${idx}`).digest('hex').slice(0, 8);
+      const wikiThumb = (dossier && dossier.ok && dossier.thumbnail) ? dossier.thumbnail : '';
+
+      out.push(normalizeLiveItem({
+        id: spec.id || `wiki-slice-${hash8}`,
+        sourceName: 'Wikipedia',
+        channel: 'quotes',
+        kind: 'wiki',
+        resBadge: 'WIKI',
+        title: displayTitle,
+        enTitle: dossier && dossier.ok
+          ? `WIKIPEDIA · ${String(dossier.lang || 'zh').toUpperCase()}${dossier.title !== displayTitle ? ' · ' + dossier.title : ''}`
+          : 'WIKIPEDIA KNOWLEDGE SLICE',
+        shortTitle: compactBubbleShortTitle(displayTitle),
+        subtitle: '维基百科知识切片 · 点击展开右侧完整词条深读',
+        thumbUrl: wikiThumb,
+        previewUrl: wikiThumb,
+        fullUrl: '',
+        sourceUrl: (dossier && dossier.ok && dossier.pageUrl) || `https://zh.wikipedia.org/wiki/${encodeURIComponent(resolvedWikiTitle)}`,
+        wikiTitle: resolvedWikiTitle,
+        wikiFallback: defaultWikiFallback || '',
+        wikidataQid: (dossier && dossier.wikidataQid) || qid,
+        wikiExtract: extract || `点击此卡展开「${resolvedWikiTitle}」的维基百科完整章节与延伸脉络。`,
+        fableCaption: String(spec.caption || spec.fableCaption || spec.note || '').trim(),
+        story: String(spec.caption || spec.fableCaption || '').trim(),
+        relatedSeeds: (dossier && Array.isArray(dossier.relatedTopics) ? dossier.relatedTopics.slice(0, 6) : [resolvedWikiTitle]),
+        meta: ['知识切片', (dossier && dossier.lang === 'en') ? 'English Wikipedia' : '中文维基百科', authorName || 'Fable'],
+        tags: [resolvedWikiTitle, 'Wikipedia'],
+        palette: PALETTES_BY_CHANNEL.quotes
+      }));
+      continue;
+    }
+
+    // 3. 拾句 / 幕间串词卡片：{ kind: "quote", quote: "...", subtitle?: "...", caption?: "...", wiki?: "..." }
+    if (spec.kind === 'quote' || (spec.quote && !spec.id && !spec.fullUrl && !spec.thumbUrl)) {
+      const qText = String(spec.quote || spec.title || '').trim();
+      if (!qText) continue;
+      const hash8 = crypto.createHash('sha1').update(`quote:${qText}:${idx}`).digest('hex').slice(0, 8);
+      const qWiki = String(spec.wiki || spec.wikiTitle || defaultWikiFallback || '').trim();
+      out.push(normalizeLiveItem({
+        id: spec.id || `quote-slice-${hash8}`,
+        sourceName: authorName || 'Fable',
+        channel: 'quotes',
+        kind: 'quote',
+        resBadge: 'QUOTE',
+        quote: qText,
+        title: String(spec.title || qText.slice(0, 34)).trim(),
+        enTitle: String(spec.enTitle || 'CURATORIAL INTERLUDE').trim(),
+        shortTitle: compactBubbleShortTitle(spec.title || qText),
+        subtitle: String(spec.subtitle || `—— ${authorName || 'Fable'} · 幕间拾句`).trim(),
+        fableCaption: String(spec.caption || spec.fableCaption || '').trim(),
+        story: String(spec.story || spec.caption || '').trim(),
+        wikiTitle: qWiki,
+        wikiFallback: defaultWikiFallback || '',
+        relatedSeeds: [qWiki].filter(Boolean),
+        meta: ['幕间拾句', authorName || 'Fable'],
+        tags: [qWiki].filter(Boolean),
+        palette: PALETTES_BY_CHANNEL.quotes
+      }));
+      continue;
+    }
+
+    // 4. 带单张批注的短 ID 引用：{ id: "met-live-444854", caption: "...", wiki?: "...", title?: "..." }
+    if (spec.id && !(spec.fullUrl || spec.previewUrl || spec.thumbUrl)) {
+      const hydrated = await hydrateSinglePearlById(spec.id);
+      if (hydrated) {
+        const merged = Object.assign({}, hydrated);
+        if (spec.title) merged.title = String(spec.title).trim();
+        if (spec.wiki || spec.wikiTitle) merged.wikiTitle = String(spec.wiki || spec.wikiTitle).trim();
+        if (spec.qid || spec.wikidataQid) merged.wikidataQid = extractWikidataQid(spec.qid || spec.wikidataQid);
+        if (spec.caption || spec.fableCaption) merged.fableCaption = String(spec.caption || spec.fableCaption).trim();
+        if (defaultWikiFallback && !merged.wikiFallback) merged.wikiFallback = defaultWikiFallback;
+        out.push(normalizeLiveItem(merged));
+      }
+      continue;
+    }
+
+    // 5. 传统完整作品对象（向后兼容 --items picks.json）
+    if (spec.id && (spec.fullUrl || spec.previewUrl || spec.thumbUrl)) {
+      const norm = normalizeLiveItem(spec);
+      if (spec.caption || spec.fableCaption) norm.fableCaption = String(spec.caption || spec.fableCaption).trim();
+      if (defaultWikiFallback && !norm.wikiFallback) norm.wikiFallback = defaultWikiFallback;
+      upsertPearlsVault([norm]);
+      out.push(norm);
+    }
+  }
+  return out;
+}
+
+async function curateItemsByKeywords(keywordsInput, domainPref, wikiHint) {
+  const rawKw = Array.isArray(keywordsInput) ? keywordsInput.join(' ') : String(keywordsInput || '').trim();
+  const subQueries = rawKw.split(/\s*\|\s*/).map((s) => s.trim()).filter(Boolean).slice(0, 4);
+  const queriesToRun = subQueries.length ? subQueries : [rawKw || 'masterpiece'];
+
+  const probeBatches = await Promise.all(
+    queriesToRun.map((sq) => runMultiSourceProbeForSubQuery(sq, domainPref || '', wikiHint || ''))
+  );
+
+  const allRaw = [];
+  const allTerms = [];
+  for (const b of probeBatches) {
+    allRaw.push(...b.items);
+    allTerms.push(...b.terms);
+  }
+  upsertPearlsVault(allRaw);
+
+  // 严格相关性过滤 + 跨馆去重 + 14天冷却降权：宁可返回 6–14 件真正切题的珍品，也绝不拿跑题器物硬凑 24 件
+  let ranked = scoreAndFilterCandidates(allRaw, allTerms.concat(queriesToRun), {
+    limit: 14,
+    strictRelevance: true,
+    includeCooled: false
+  });
+  if (ranked.length < 3 && allRaw.length > 0) {
+    ranked = scoreAndFilterCandidates(allRaw, allTerms, {
+      limit: 10,
+      strictRelevance: false,
+      includeCooled: true
+    });
+  }
+  return ranked.map((r) => r.it);
 }
 
 // ==================== HTTP 路由主入口 ====================
@@ -1977,7 +2951,8 @@ const server = http.createServer(async (req, res) => {
       const title = reqUrl.searchParams.get('title') || '';
       const lang = reqUrl.searchParams.get('lang') || 'zh';
       const fallback = reqUrl.searchParams.get('fallback') || '';
-      const dossier = await getWikiDossier(title, lang, fallback);
+      const qid = reqUrl.searchParams.get('qid') || '';
+      const dossier = await getWikiDossier(title, lang, fallback, qid);
       sendJson(req, res, 200, dossier);
     } catch (e) {
       sendJson(req, res, 200, { ok: false, error: e.message });
@@ -1993,6 +2968,43 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       sendJson(req, res, 200, { ok: false, error: e.message, items: [] });
     }
+    return;
+  }
+
+  // 7a. 极简省 Token 珍珠候选探针与策展冷却账本接口（供 Fable 两步法挑选作品 ID）
+  if (urlPath === '/api/pearls/search' && req.method === 'GET') {
+    try {
+      const q = reqUrl.searchParams.get('q') || reqUrl.searchParams.get('keywords') || '';
+      const domain = reqUrl.searchParams.get('domain') || '';
+      const wiki = reqUrl.searchParams.get('wiki') || '';
+      const limit = Number(reqUrl.searchParams.get('limit') || 18);
+      const includeCooled = reqUrl.searchParams.get('includeCooled') === '1';
+      const resObj = await searchPearlsLightweight(q, { domain, wiki, limit, includeCooled });
+      sendJson(req, res, 200, resObj);
+    } catch (e) {
+      sendJson(req, res, 200, { ok: false, error: e.message, pearls: [] });
+    }
+    return;
+  }
+
+  if (urlPath === '/api/pearls/history' && req.method === 'GET') {
+    const hist = readCollectionHistory();
+    const favs = readFavoritesList();
+    const nowTs = Date.now();
+    const cooledIds = [];
+    for (const [id, rec] of Object.entries((hist && hist.items) || {})) {
+      if (rec && rec.lastUsedAt && (nowTs - rec.lastUsedAt < COOLING_WINDOW_MS)) {
+        cooledIds.push({ id, title: rec.title || '', slugs: rec.slugs || [], count: rec.count || 1 });
+      }
+    }
+    sendJson(req, res, 200, {
+      ok: true,
+      vaultCount: Object.keys(readPearlsVaultMap()).length,
+      coolingDays: 14,
+      cooledCount: cooledIds.length,
+      cooled: cooledIds.slice(0, 50),
+      favorites: favs.map((f) => ({ id: f.id, title: f.title, source: f.sourceName || '' }))
+    });
     return;
   }
 
@@ -2105,20 +3117,40 @@ const server = http.createServer(async (req, res) => {
       const title = String(body.title || body.keywords || '专题画卷').trim();
       const keywords = body.keywords || body.q || title;
       const slug = sanitizeSlug(body.slug, title);
-      const wikiTitle = String(body.wikiTitle || body.wiki || String(keywords).split(/[\s,，·]+/)[0] || '').trim();
-      let items = (Array.isArray(body.items) && body.items.length
-        ? body.items.map(normalizeLiveItem)
-        : await curateItemsByKeywords(keywords, body.domain || '', wikiTitle)).filter((it) => it && it.id);
+      const author = String(body.author || 'Fable').trim();
+      const wikiTitle = String(body.wikiTitle || body.wiki || String(keywords).split(/[\s,，·|]+/)[0] || '').trim();
+
+      let rawSpec = null;
+      if (Array.isArray(body.pearls) && body.pearls.length) {
+        rawSpec = body.pearls;
+      } else if (body.ids) {
+        rawSpec = Array.isArray(body.ids)
+          ? body.ids
+          : String(body.ids).split(',').map((s) => s.trim()).filter(Boolean);
+      } else if (Array.isArray(body.items) && body.items.length) {
+        rawSpec = body.items;
+      }
+
+      let items = rawSpec
+        ? await hydrateCuratedPearlsSpec(rawSpec, wikiTitle, author)
+        : await curateItemsByKeywords(keywords, body.domain || '', wikiTitle);
+      items = items.filter((it) => it && it.id);
+
       // 0 件就不建页、不进书架：上游限流（Wikimedia 429）或关键词太冷门时，空页打开是白板且不报错。
       if (!items.length) {
         sendJson(req, res, 422, {
           ok: false,
-          error: '0 件作品，没建页：可能是图源在限流（如 Wikimedia too many requests），或关键词太冷门。换个关键词、换 --domain，或用 --items 自己挑。',
+          error: '0 件作品，没建页：可能是图源在限流（如 Wikimedia too many requests），或关键词/ID 无有效命中。请先用 --search 探针确认候选。',
           itemCount: 0
         });
         return;
       }
 
+      recordCollectionUsage(slug, items);
+
+      const visualFirst =
+        items.find((it) => it && it.kind !== 'quote' && it.kind !== 'wiki' && (it.thumbUrl || it.previewUrl)) ||
+        items.find((it) => it && (it.thumbUrl || it.previewUrl));
       const nowIso = new Date().toISOString();
       const existing = readJsonSafe(path.join(PAGES_DIR, `${slug}.json`), null);
       const pageDoc = {
@@ -2126,11 +3158,11 @@ const server = http.createServer(async (req, res) => {
         title,
         subtitle: String(body.subtitle || '').trim(),
         note: String(body.note || '').trim(),
-        author: String(body.author || 'Fable').trim(),
+        author,
         keywords: Array.isArray(keywords) ? keywords.join(', ') : String(keywords || ''),
         domain: String(body.domain || ''),
         wikiTitle,
-        coverUrl: body.coverUrl || (items[0] ? (items[0].thumbUrl || items[0].previewUrl || '') : ''),
+        coverUrl: body.coverUrl || (visualFirst ? (visualFirst.thumbUrl || visualFirst.previewUrl || '') : ''),
         createdAt: (existing && existing.createdAt) || nowIso,
         updatedAt: nowIso,
         items
