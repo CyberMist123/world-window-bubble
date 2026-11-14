@@ -2013,7 +2013,9 @@ const server = http.createServer(async (req, res) => {
 
   // 10. 静态资源服务（/ 与 /p/<slug> 统一返回 index.html 交由前端路由呈现专题页）
   const isSpaPageRoute = urlPath === '/' || /^\/p\/[A-Za-z0-9\-_%]+\/?$/.test(urlPath);
-  const relPath = isSpaPageRoute ? 'index.html' : urlPath.replace(/^\/+/, '');
+  // /p/<slug> 页里 index.html 的 ./styles.css 等相对资源会被浏览器解析成 /p/styles.css；
+  // 这里把 /p/ 下的资源请求落回站点根目录（不改 index.html：bundle.js 按 ./styles.css 字面量内联）。
+  const relPath = isSpaPageRoute ? 'index.html' : urlPath.replace(/^\/p\//, '/').replace(/^\/+/, '');
   const fullPath = path.resolve(ROOT, relPath);
 
   if (!fullPath.startsWith(ROOT)) {
