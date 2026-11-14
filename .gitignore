@@ -1,0 +1,11 @@
+node_modules/
+.env
+dist/
+feed-profile/.cache/
+feed-profile/pages/*.json
+feed-profile/favorites.json
+feed-profile/seen.json
+feed-profile/signals.jsonl
+feed-profile/preferences.json
+feed-profile/preferences.md
+*.log

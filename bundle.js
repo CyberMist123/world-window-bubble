@@ -11,8 +11,9 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = __dirname;
-const DEFAULT_OUT =
-  'C:\\Users\\18717\\AppData\\Local\\Claude-Data\\claude_pzs8sxrjxfjjc\\scratch-workspaces\\c654e0b6-baab-4c24-bfc8-f342a012483e\\8ea0e4de-23af-4ced-8e06-4d6e65010bb7\\scratch-2026-11-13-37074b\\index.html';
+const DEFAULT_OUT = process.env.BUNDLE_OUT_PATH
+  ? path.resolve(process.env.BUNDLE_OUT_PATH)
+  : path.join(ROOT, 'dist', 'index.single.html');
 
 const outPath = process.argv[2] ? path.resolve(process.argv[2]) : DEFAULT_OUT;
 

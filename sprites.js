@@ -399,8 +399,94 @@
     }
   ];
 
-  function parseSpec(sp, stops) {
-    const centerRgb = hexToRgb(sp.center);
+  let currentTheme = (window.WORLD_DATA && window.WORLD_DATA.THEMES && window.WORLD_DATA.THEMES['celadon-mist']) || {
+    id: 'celadon-mist',
+    bgHex: '#f2f5f4',
+    silkBase: [242, 245, 244],
+    silkAmp: 0.56,
+    ink: '#172020',
+    desat: 0.46,
+    lift: 0.34,
+    hueShiftDeg: 8,
+    tintRgb: [243, 248, 246]
+  };
+
+  function rgbToHsl(r, g, b) {
+    const rn = r / 255, gn = g / 255, bn = b / 255;
+    const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+    let h = 0, s = 0;
+    const l = (max + min) * 0.5;
+    if (max !== min) {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      switch (max) {
+        case rn: h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60; break;
+        case gn: h = ((bn - rn) / d + 2) * 60; break;
+        default: h = ((rn - gn) / d + 4) * 60; break;
+      }
+    }
+    return [h, s, l];
+  }
+
+  function hslToRgb(h, s, l) {
+    if (s <= 0.0001) {
+      const v = Math.round(l * 255);
+      return [v, v, v];
+    }
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const hk = (((h % 360) + 360) % 360) / 360;
+    function hue2rgb(t) {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    }
+    return [
+      Math.round(hue2rgb(hk + 1 / 3) * 255),
+      Math.round(hue2rgb(hk) * 255),
+      Math.round(hue2rgb(hk - 1 / 3) * 255)
+    ];
+  }
+
+  function transformRgbForTheme(rgb, theme, isInvertedCrystal) {
+    if (!theme) return rgb.slice();
+    // 前景水晶小气泡在 frontDisplay_frg 中执行 1.0 - col，先还原到屏幕正相色域柔化，再反相回去以保住纯白玻璃亮边
+    const src = isInvertedCrystal ? [255 - rgb[0], 255 - rgb[1], 255 - rgb[2]] : rgb;
+    const hsl = rgbToHsl(src[0], src[1], src[2]);
+    const desat = theme.desat != null ? theme.desat : 0.48;
+    const lift = theme.lift != null ? theme.lift : 0.32;
+    const shift = theme.hueShiftDeg || 0;
+    const tint = theme.tintRgb || [244, 246, 245];
+
+    const nh = (hsl[0] + shift + 360) % 360;
+    const ns = Math.max(0, Math.min(1, hsl[1] * (isInvertedCrystal ? Math.min(1, desat * 1.12) : desat)));
+    // 保留高光外沿的奶油瓷白通透对比，同时把高饱和内芯提亮为清淡半透明水彩釉色
+    const targetCeil = isInvertedCrystal ? 0.985 : 0.968;
+    const nl = hsl[2] + (targetCeil - hsl[2]) * (isInvertedCrystal ? lift * 0.85 : lift);
+    const soft = hslToRgb(nh, ns, Math.max(0, Math.min(1, nl)));
+
+    const tintMix = isInvertedCrystal ? 0.10 : 0.16;
+    const outPos = [
+      Math.round(soft[0] * (1 - tintMix) + tint[0] * tintMix),
+      Math.round(soft[1] * (1 - tintMix) + tint[1] * tintMix),
+      Math.round(soft[2] * (1 - tintMix) + tint[2] * tintMix)
+    ];
+
+    if (isInvertedCrystal) {
+      return [
+        Math.max(0, Math.min(255, Math.round((255 - outPos[0]) * 0.82))),
+        Math.max(0, Math.min(255, Math.round((255 - outPos[1]) * 0.82))),
+        Math.max(0, Math.min(255, Math.round((255 - outPos[2]) * 0.82)))
+      ];
+    }
+    return outPos;
+  }
+
+  function parseSpec(sp, stops, theme, isInvertedCrystal) {
+    const centerRgb = transformRgbForTheme(hexToRgb(sp.center), theme, isInvertedCrystal);
     const centerRing = [];
     for (let i = 0; i < 24; i++) centerRing.push(centerRgb);
     let parsedAlpha = null;
@@ -414,17 +500,27 @@
       stops: stops,
       radiusRatio: sp.radiusRatio,
       featherStart: sp.featherStart,
-      allRings: [centerRing].concat(sp.rings.map(function (r) { return r.map(hexToRgb); })),
+      allRings: [centerRing].concat(sp.rings.map(function (r) {
+        return r.map(function (hx) { return transformRgbForTheme(hexToRgb(hx), theme, isInvertedCrystal); });
+      })),
       alphaRings: parsedAlpha
     };
   }
 
   const PARSED_BALLS = {};
-  Object.keys(BALL_SPECS).forEach(function (key) {
-    PARSED_BALLS[key] = parseSpec(BALL_SPECS[key], RADIAL_STOPS);
-  });
-  const PARSED_FRONT_SHARP = FRONT_SHARP_SPECS.map(function (s) { return parseSpec(s, FRONT_STOPS); });
-  const PARSED_FRONT_SOFT = FRONT_SOFT_SPECS.map(function (s) { return parseSpec(s, FRONT_STOPS); });
+  let PARSED_FRONT_SHARP = [];
+  let PARSED_FRONT_SOFT = [];
+
+  function rebuildParsedSpecs(theme) {
+    if (theme) currentTheme = theme;
+    Object.keys(BALL_SPECS).forEach(function (key) {
+      PARSED_BALLS[key] = parseSpec(BALL_SPECS[key], RADIAL_STOPS, currentTheme, false);
+    });
+    PARSED_FRONT_SHARP = FRONT_SHARP_SPECS.map(function (s) { return parseSpec(s, FRONT_STOPS, currentTheme, true); });
+    PARSED_FRONT_SOFT = FRONT_SOFT_SPECS.map(function (s) { return parseSpec(s, FRONT_STOPS, currentTheme, true); });
+  }
+
+  rebuildParsedSpecs(currentTheme);
 
   /**
    * 通用极坐标三维气泡绘制内核（同时支持命名主球与前景反相球 spec）
@@ -640,7 +736,7 @@
     return { sharp: sharp, soft: soft, combined: combined };
   }
 
-  // 背景散景虚化气泡 2x2 图集（对标原版散景层四象限暖杏/桃粉/珊瑚柔焦气泡，中心最高透光度 0.80）
+  // 背景散景虚化气泡 2x2 图集（随当前主题自动柔化散景气泡色调，保持轻透空间层次）
   function buildBokehAtlas(cell) {
     const cSize = cell || 192;
     const canvas = document.createElement('canvas');
@@ -648,12 +744,11 @@
     canvas.height = cSize * 2;
     const ctx = canvas.getContext('2d');
 
-    // 四象限实测色调与半径：0(暖杏柠檬), 1(柔桃粉小泡), 2(珊瑚玫瑰), 3(暖蜜桃腮红)
-    const bokehCells = [
-      { r: 0.235, ox: 0.05, oy: -0.04, c0: '255, 173, 117', c1: '248, 226, 136', aMax: 0.80 },
-      { r: 0.175, ox: 0.03, oy: -0.03, c0: '246, 155, 152', c1: '254, 196, 162', aMax: 0.78 },
-      { r: 0.235, ox: -0.04, oy: 0.04, c0: '246, 98, 122',  c1: '245, 162, 126', aMax: 0.80 },
-      { r: 0.215, ox: 0.03, oy: 0.03,  c0: '244, 150, 148', c1: '254, 146, 124', aMax: 0.79 }
+    const baseBokeh = [
+      { r: 0.235, ox: 0.05, oy: -0.04, rgb0: [255, 173, 117], rgb1: [248, 226, 136], aMax: 0.64 },
+      { r: 0.175, ox: 0.03, oy: -0.03, rgb0: [122, 198, 192], rgb1: [216, 240, 236], aMax: 0.62 },
+      { r: 0.235, ox: -0.04, oy: 0.04, rgb0: [246, 128, 146], rgb1: [245, 182, 166], aMax: 0.64 },
+      { r: 0.215, ox: 0.03, oy: 0.03,  rgb0: [192, 168, 218], rgb1: [236, 222, 246], aMax: 0.62 }
     ];
 
     const raw = document.createElement('canvas');
@@ -661,7 +756,9 @@
     raw.height = cSize * 2;
     const rCtx = raw.getContext('2d');
 
-    bokehCells.forEach(function (bc, i) {
+    baseBokeh.forEach(function (bc, i) {
+      const c0 = transformRgbForTheme(bc.rgb0, currentTheme, false).join(', ');
+      const c1 = transformRgbForTheme(bc.rgb1, currentTheme, false).join(', ');
       const pos = cell2x2Origin(i, cSize);
       const cx = pos[0] + cSize * 0.5;
       const cy = pos[1] + cSize * 0.5;
@@ -675,10 +772,10 @@
         cx + rad * bc.ox * 2.4, cy + rad * bc.oy * 2.4, rad * 0.04,
         cx, cy, rad
       );
-      g.addColorStop(0.0, 'rgba(' + bc.c0 + ', ' + bc.aMax + ')');
-      g.addColorStop(0.46, 'rgba(' + bc.c1 + ', ' + (bc.aMax * 0.90).toFixed(3) + ')');
-      g.addColorStop(0.76, 'rgba(' + bc.c1 + ', ' + (bc.aMax * 0.42).toFixed(3) + ')');
-      g.addColorStop(1.0, 'rgba(' + bc.c1 + ', 0)');
+      g.addColorStop(0.0, 'rgba(' + c0 + ', ' + bc.aMax + ')');
+      g.addColorStop(0.46, 'rgba(' + c1 + ', ' + (bc.aMax * 0.90).toFixed(3) + ')');
+      g.addColorStop(0.76, 'rgba(' + c1 + ', ' + (bc.aMax * 0.42).toFixed(3) + ')');
+      g.addColorStop(1.0, 'rgba(' + c1 + ', 0)');
       rCtx.fillStyle = g;
       rCtx.fillRect(pos[0], pos[1], cSize, cSize);
       rCtx.restore();
@@ -692,8 +789,6 @@
 
   /**
    * 连线微缩立体水彩气泡珠与柔光露珠粒子 2x2 图集（jointBall & jointBall_blur）
-   * 对标实测：每个象限均为 R=0.38 的真实双层三维水彩小气泡（含奶油菲涅尔亮边与饱和偏心液芯），
-   * blurred=true 为其高斯柔焦微粒版，彻底告别扁平白晕圆点。
    */
   function buildJointAtlas(blurred, cell) {
     const cSize = cell || 192;
@@ -744,8 +839,7 @@
   }
 
   /**
-   * 鼠标波纹与点击水波环贴图（对标双层分瓣柔白水波笔刷环：外圈 6 瓣独立浪花 + 环形暗谷 + 内圈 6 瓣微环）
-   * 瓣与瓣之间保留清晰暗隙，使点击扩散与鼠标掠过时气泡边缘拉出灵动的液态水波浪瓣而非均匀平移。
+   * 鼠标波纹与点击水波环贴图（外圈 6 瓣独立浪花 + 环形暗谷 + 内圈 5 瓣微环）
    */
   function buildBrushRing(size) {
     const s = size || 256;
@@ -776,7 +870,7 @@
     const outerRadii  = [0.325, 0.315, 0.335, 0.330, 0.320, 0.305];
     const outerSpanT  = [0.155, 0.130, 0.165, 0.160, 0.170, 0.115];
     const outerSpanR  = [0.092, 0.084, 0.095, 0.088, 0.096, 0.076];
-    const outerAlpha  = [0.90,  0.86,  0.84,  0.88,  0.84,  0.62];
+    const outerAlpha  = [0.92,  0.88,  0.86,  0.90,  0.86,  0.66];
 
     for (let i = 0; i < 6; i++) {
       const a = outerAngles[i];
@@ -800,7 +894,7 @@
         s * 0.056,
         s * 0.035,
         a + Math.PI * 0.5 - 0.18,
-        0.38
+        0.40
       );
     }
 
@@ -812,7 +906,6 @@
     oCtx.drawImage(raw, 0, 0);
     oCtx.filter = 'none';
 
-    // 确保纯白 RGB (255,255,255) 无预乘灰底，与着色器 texture(mEffect).r 完全契合
     const img = oCtx.getImageData(0, 0, s, s);
     const d = img.data;
     for (let p = 0; p < d.length; p += 4) {
@@ -825,13 +918,10 @@
   }
 
   /**
-   * 背景全息丝绸垂褶贴图（1024x1024）
-   * #EEEEEE 纯净银白丝绸底，在 y=0.39..0.69 区间构筑 7 组 U 型垂悬与 Y 型分叉薄膜干涉棱镜褶皱：
-   * 每组褶皱包含冰青 -> 薄荷绿 -> 高于底色的珠光亮脊 (#F6F4EF) -> 樱花粉 -> 矢车菊淡紫的平行薄膜光谱，
-   * 经 bg_frg.js 旋转 -20° 正弦波扭曲后形成真实立体的流动彩虹丝绸光泽。
+   * 背景全息丝绸垂褶贴图（随主题切换宣纸米色 / 影青晨雾 / 母贝珠光基底）
    */
   function buildBgColor(size) {
-    const s = size || 1024;
+    const s = size || 512;
     const raw = document.createElement('canvas');
     raw.width = s;
     raw.height = s;
@@ -844,8 +934,6 @@
       return Math.exp(-0.5 * z * z);
     }
 
-    // 评估一条薄膜干涉丝绸棱镜脊在横向偏移 dx（单位：归一化画幅宽度）处的三通道色彩增量
-    // 对标实测光谱峰值：冰青薄荷 (210,230,228)、薰衣草淡紫 (221,218,240)、珠光亮脊 (#F7F5F2)、樱花粉 (245,236,240)
     function evalPrismCrease(dx, widthScale, amp, flip) {
       const u = (flip ? -dx : dx) / widthScale;
       const gCyan   = gauss(u, -1.25, 0.56);
@@ -860,7 +948,8 @@
       return [dr, dg, db];
     }
 
-    const BASE_BG = 242;
+    const baseRgb = (currentTheme && currentTheme.silkBase) || [242, 245, 244];
+    const silkAmp = (currentTheme && currentTheme.silkAmp != null) ? currentTheme.silkAmp : 0.56;
     const yMin = 0.22;
     const yMax = 0.80;
 
@@ -869,39 +958,36 @@
       let envY = 0;
       let v = 0;
       if (ny > yMin && ny < yMax) {
-        v = (ny - yMin) / (yMax - yMin); // 0 .. 1
+        v = (ny - yMin) / (yMax - yMin);
         envY = Math.pow(Math.sin(Math.PI * v), 1.35);
       }
 
       for (let px = 0; px < s; px++) {
         const idx = (py * s + px) * 4;
         if (envY <= 0.001) {
-          data[idx] = BASE_BG;
-          data[idx + 1] = BASE_BG;
-          data[idx + 2] = BASE_BG;
+          data[idx] = baseRgb[0];
+          data[idx + 1] = baseRgb[1];
+          data[idx + 2] = baseRgb[2];
           data[idx + 3] = 255;
           continue;
         }
 
         const nx = px / s;
-        let r = BASE_BG;
-        let g = BASE_BG;
-        let b = BASE_BG;
-        const boost = 0.68 * envY;
+        let r = baseRgb[0];
+        let g = baseRgb[1];
+        let b = baseRgb[2];
+        const boost = silkAmp * envY;
 
-        // Pleat 1 (x ≈ 0.08..0.15): U 型斜向悬垂青翠珠光褶
         {
           const cx1 = 0.082 + 0.068 * v + 0.032 * Math.sin(v * Math.PI * 0.95);
           const c1 = evalPrismCrease(nx - cx1, 0.030, 1.10 * boost, false);
           r += c1[0]; g += c1[1]; b += c1[2];
         }
-        // Pleat 2 (x ≈ 0.21..0.29): 斜向 S 弯薰衣草粉紫双棱褶
         {
           const cx2 = 0.215 + 0.075 * v + 0.022 * Math.sin(v * Math.PI * 1.4 + 0.35);
           const c2 = evalPrismCrease(nx - cx2, 0.034, 1.12 * boost, true);
           r += c2[0]; g += c2[1]; b += c2[2];
         }
-        // Pleat 3 (x ≈ 0.35..0.49): Y 型分叉彩虹主丝绸脊
         {
           const fork = Math.max(0, 1 - v * 1.55);
           const stemX = 0.415 + 0.065 * v;
@@ -911,16 +997,14 @@
           const c3b = evalPrismCrease(nx - bR, 0.025, 0.68 * fork * boost, true);
           r += c3a[0] + c3b[0]; g += c3a[1] + c3b[1]; b += c3a[2] + c3b[2];
         }
-        // Pleat 4 (x ≈ 0.53..0.67): 斜向收拢珠光宽丝绸亮面 + 青紫折痕
         {
           const cx4 = 0.625 - 0.085 * v + 0.018 * Math.sin(v * Math.PI);
           const c4 = evalPrismCrease(nx - cx4, 0.036, 1.18 * boost, false);
-          const broadPearl = gauss(nx, 0.645 - 0.040 * v, 0.052) * envY * 8.5;
+          const broadPearl = gauss(nx, 0.645 - 0.040 * v, 0.052) * envY * 7.5;
           r += c4[0] + broadPearl;
           g += c4[1] + broadPearl * 0.94;
           b += c4[2] + broadPearl * 0.72;
         }
-        // Pleat 5 (x ≈ 0.72..0.85): Y 型分叉柔青玫瑰褶
         {
           const fork5 = Math.max(0, 1 - v * 1.50);
           const stem5 = 0.785 - 0.055 * v;
@@ -928,7 +1012,6 @@
           const c5b = evalPrismCrease(nx - (stem5 - 0.040 * fork5), 0.024, 0.58 * fork5 * boost, true);
           r += c5a[0] + c5b[0]; g += c5a[1] + c5b[1]; b += c5a[2] + c5b[2];
         }
-        // Pleat 6 (x ≈ 0.88..0.94): 右侧修长天青丁香立褶
         {
           const cx6 = 0.925 - 0.045 * v;
           const c6 = evalPrismCrease(nx - cx6, 0.030, 1.08 * boost, false);
@@ -947,15 +1030,15 @@
     canvas.width = s;
     canvas.height = s;
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#f2f2f2';
+    ctx.fillStyle = (currentTheme && currentTheme.bgHex) || '#f2f5f4';
     ctx.fillRect(0, 0, s, s);
-    ctx.filter = 'blur(' + Math.max(3, Math.round(s * 0.0055)) + 'px)';
+    ctx.filter = 'blur(' + Math.max(3, Math.round(s * 0.006)) + 'px)';
     ctx.drawImage(raw, 0, 0);
     ctx.filter = 'none';
     return canvas;
   }
 
-  // 顶部颗粒层贴图（512x512 单色胶片噪点，对齐原版均值 144 柔和纸纹）
+  // 顶部颗粒层贴图（512x512 单色胶片噪点）
   function buildSand(size) {
     const s = size || 512;
     const rnd = srand(37);
@@ -977,9 +1060,9 @@
   }
 
   /**
-   * 生成 z = -5 的背景英文衬线大标题 2x3 图集（对应 glTopBgWord）
+   * 生成 z = -5 的背景英文衬线大标题 2x3 图集（随字体预设与主题动态重绘）
    */
-  function buildBgWordAtlas(sections) {
+  function buildBgWordAtlas(sections, fontPreset) {
     const cw = 1180;
     const ch = 408;
     const canvas = document.createElement('canvas');
@@ -987,6 +1070,10 @@
     canvas.height = ch * 3;
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const sansFam = (fontPreset && fontPreset.enSans) || '"Libre Franklin", "Helvetica Neue", Arial, sans-serif';
+    const serifFam = (fontPreset && fontPreset.enDisplay) || '"Libre Caslon Display", Georgia, serif';
+    const inkCol = (currentTheme && currentTheme.ink) || '#172020';
 
     sections.slice(0, 6).forEach(function (sec, i) {
       const col = i % 2;
@@ -999,19 +1086,19 @@
       ctx.beginPath();
       ctx.rect(0, 0, cw, ch);
       ctx.clip();
-      ctx.fillStyle = '#141414';
+      ctx.fillStyle = inkCol;
       ctx.textBaseline = 'top';
 
-      ctx.font = '300 36px "Libre Franklin", "Helvetica Neue", Arial, sans-serif';
+      ctx.font = '300 34px ' + sansFam;
       if ('letterSpacing' in ctx) ctx.letterSpacing = '2.5px';
       ctx.fillText(sec.bgSup || 'WINDOW', 64, 24, cw - 96);
 
-      ctx.font = '400 138px "Libre Caslon Display", Georgia, serif';
-      if ('letterSpacing' in ctx) ctx.letterSpacing = '-1.5px';
+      ctx.font = '400 132px ' + serifFam;
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '-1.2px';
       const line1 = (sec.bgTitle && sec.bgTitle[0]) || '';
       const line2 = (sec.bgTitle && sec.bgTitle[1]) || '';
       ctx.fillText(line1, 58, 76, cw - 88);
-      ctx.fillText(line2, 188, 206, cw - 208);
+      ctx.fillText(line2, 188, 204, cw - 208);
       ctx.restore();
     });
 
@@ -1019,14 +1106,16 @@
   }
 
   /**
-   * 生成子泡泡与详情卡片使用的白瓷底精致微缩徽章插画（零外部图片）
+   * 生成子泡泡与文字切片使用的精致圆形徽章（句子类渲染为笺纸文学印记，画作类作为渐进加载占位）
    */
   const thumbCache = new Map();
-  function buildThumbDataURL(item, size) {
-    const s = size || 160;
-    const pal = item.palette || ['#5aa8c9', '#eef6f9', '#f6b3c2'];
-    const motif = item.motif || 'horizon';
-    const key = pal.join(',') + '|' + motif + '|' + s;
+  function buildThumbDataURL(rawItem, size) {
+    const s = size || 200;
+    const item = (rawItem && rawItem.item) ? rawItem.item : (rawItem || {});
+    const pal = item.palette || (rawItem && rawItem.palette) || ['#7aa69f', '#eef6f4', '#d9b391'];
+    const isQuote = item.kind === 'quote' || (rawItem && rawItem.motif === 'quote');
+    const titleSeed = String(item.shortTitle || item.title || '').replace(/<br\s*\/?>/gi, '|');
+    const key = pal.join(',') + '|' + (isQuote ? 'Q:' + titleSeed : (rawItem && rawItem.motif) || 'art') + '|' + s;
     if (thumbCache.has(key)) return thumbCache.get(key);
 
     const c = document.createElement('canvas');
@@ -1038,134 +1127,77 @@
     x.fillRect(0, 0, s, s);
 
     x.save();
-    const glow = x.createRadialGradient(s * 0.5, s * 0.5, 0, s * 0.5, s * 0.5, s * 0.36);
-    glow.addColorStop(0, pal[1]);
-    glow.addColorStop(0.75, '#ffffff');
+    const glow = x.createRadialGradient(s * 0.46, s * 0.44, 0, s * 0.5, s * 0.5, s * 0.44);
+    glow.addColorStop(0, pal[1] || '#f2f6f5');
+    glow.addColorStop(0.72, '#fbfcfb');
     glow.addColorStop(1, '#ffffff');
-    x.globalAlpha = 0.85;
     x.fillStyle = glow;
     x.beginPath();
-    x.arc(s * 0.5, s * 0.5, s * 0.38, 0, Math.PI * 2);
+    x.arc(s * 0.5, s * 0.5, s * 0.45, 0, Math.PI * 2);
     x.fill();
     x.restore();
 
-    x.save();
-    x.beginPath();
-    x.arc(s * 0.5, s * 0.5, s * 0.31, 0, Math.PI * 2);
-    x.clip();
+    if (isQuote) {
+      x.save();
+      // 细宣纸内圈纹
+      x.strokeStyle = pal[0] || '#7aa69f';
+      x.globalAlpha = 0.28;
+      x.lineWidth = Math.max(1, s * 0.008);
+      x.beginPath();
+      x.arc(s * 0.5, s * 0.5, s * 0.39, 0, Math.PI * 2);
+      x.stroke();
 
-    if (motif === 'horizon') {
-      x.fillStyle = pal[1];
-      x.fillRect(s * 0.18, s * 0.18, s * 0.64, s * 0.64);
-      x.fillStyle = pal[2];
+      // 古典引号纹样
+      x.globalAlpha = 0.34;
+      x.fillStyle = pal[0] || '#7aa69f';
+      x.font = 'italic ' + Math.round(s * 0.28) + 'px Georgia, serif';
+      x.textAlign = 'center';
+      x.textBaseline = 'middle';
+      x.fillText('“', s * 0.5, s * 0.31);
+
+      // 居中两行短句印记
+      const parts = titleSeed.split('|').map(function (t) { return t.trim(); }).filter(Boolean);
+      const l1 = (parts[0] || '浮世').slice(0, 5);
+      const l2 = (parts[1] || '拾句').slice(0, 6);
+      x.globalAlpha = 0.88;
+      x.fillStyle = '#202828';
+      x.font = '500 ' + Math.round(s * 0.115) + 'px "LXGW WenKai", "Noto Serif SC", Georgia, serif';
+      x.fillText(l1, s * 0.5, s * 0.49);
+      x.font = '400 ' + Math.round(s * 0.102) + 'px "LXGW WenKai", "Noto Serif SC", Georgia, serif';
+      x.fillText(l2, s * 0.5, s * 0.64);
+
+      // 底部矿物朱砂/松石小印点
+      x.globalAlpha = 0.72;
+      x.fillStyle = pal[2] || '#d9ad8b';
       x.beginPath();
-      x.arc(s * 0.58, s * 0.42, s * 0.105, 0, Math.PI * 2);
+      x.arc(s * 0.5, s * 0.78, s * 0.022, 0, Math.PI * 2);
       x.fill();
-      x.fillStyle = pal[0];
-      x.beginPath();
-      x.moveTo(s * 0.18, s * 0.56);
-      x.bezierCurveTo(s * 0.36, s * 0.50, s * 0.62, s * 0.62, s * 0.82, s * 0.53);
-      x.lineTo(s * 0.82, s * 0.84);
-      x.lineTo(s * 0.18, s * 0.84);
-      x.closePath();
-      x.fill();
-    } else if (motif === 'orbit') {
-      x.strokeStyle = pal[0];
-      x.lineWidth = s * 0.022;
-      x.save();
-      x.translate(s * 0.5, s * 0.51);
-      x.rotate(-0.38);
-      x.beginPath();
-      x.ellipse(0, 0, s * 0.24, s * 0.10, 0, 0, Math.PI * 2);
-      x.stroke();
       x.restore();
-      x.fillStyle = pal[0];
-      x.beginPath();
-      x.arc(s * 0.48, s * 0.50, s * 0.105, 0, Math.PI * 2);
-      x.fill();
-      x.fillStyle = pal[2];
-      x.beginPath();
-      x.arc(s * 0.66, s * 0.39, s * 0.046, 0, Math.PI * 2);
-      x.fill();
-    } else if (motif === 'arch') {
-      x.fillStyle = pal[0];
-      x.beginPath();
-      x.arc(s * 0.5, s * 0.48, s * 0.16, Math.PI, 0, false);
-      x.lineTo(s * 0.66, s * 0.72);
-      x.lineTo(s * 0.34, s * 0.72);
-      x.closePath();
-      x.fill();
-      x.fillStyle = pal[2];
-      x.beginPath();
-      x.arc(s * 0.5, s * 0.46, s * 0.058, 0, Math.PI * 2);
-      x.fill();
-    } else if (motif === 'leaf') {
-      x.save();
-      x.translate(s * 0.5, s * 0.5);
-      x.rotate(-0.45);
-      x.fillStyle = pal[0];
-      x.beginPath();
-      x.moveTo(0, -s * 0.21);
-      x.quadraticCurveTo(s * 0.16, 0, 0, s * 0.21);
-      x.quadraticCurveTo(-s * 0.16, 0, 0, -s * 0.21);
-      x.fill();
-      x.strokeStyle = '#ffffff';
-      x.lineWidth = s * 0.016;
-      x.beginPath();
-      x.moveTo(0, -s * 0.16);
-      x.lineTo(0, s * 0.16);
-      x.stroke();
-      x.restore();
-    } else if (motif === 'ripple') {
-      for (let i = 3; i >= 1; i--) {
-        x.strokeStyle = i === 2 ? pal[2] : pal[0];
-        x.lineWidth = s * 0.020;
-        x.globalAlpha = 0.38 + (4 - i) * 0.18;
-        x.beginPath();
-        x.arc(s * 0.5, s * 0.5, s * (0.075 * i), 0, Math.PI * 2);
-        x.stroke();
-      }
-      x.globalAlpha = 1;
-      x.fillStyle = pal[0];
-      x.beginPath();
-      x.arc(s * 0.5, s * 0.5, s * 0.042, 0, Math.PI * 2);
-      x.fill();
-    } else if (motif === 'window') {
-      const pad = s * 0.31;
-      const w = s - pad * 2;
-      x.strokeStyle = pal[0];
-      x.lineWidth = s * 0.024;
-      x.strokeRect(pad, pad, w, w);
-      x.beginPath();
-      x.moveTo(s * 0.5, pad);
-      x.lineTo(s * 0.5, s - pad);
-      x.moveTo(pad, s * 0.5);
-      x.lineTo(s - pad, s * 0.5);
-      x.stroke();
-      x.fillStyle = pal[2];
-      x.beginPath();
-      x.arc(s * 0.60, s * 0.40, s * 0.045, 0, Math.PI * 2);
-      x.fill();
     } else {
       x.save();
-      x.translate(s * 0.5, s * 0.5);
-      for (let i = 0; i < 5; i++) {
-        x.save();
-        x.rotate((i / 5) * Math.PI * 2);
-        x.fillStyle = i % 2 === 0 ? pal[0] : pal[2];
-        x.globalAlpha = 0.82;
-        x.beginPath();
-        x.arc(0, -s * 0.105, s * 0.082, 0, Math.PI * 2);
-        x.fill();
-        x.restore();
-      }
-      x.fillStyle = '#ffffff';
       x.beginPath();
-      x.arc(0, 0, s * 0.052, 0, Math.PI * 2);
+      x.arc(s * 0.5, s * 0.5, s * 0.36, 0, Math.PI * 2);
+      x.clip();
+
+      x.fillStyle = pal[1] || '#eef4f3';
+      x.fillRect(s * 0.12, s * 0.12, s * 0.76, s * 0.76);
+      x.fillStyle = pal[2] || '#d9b391';
+      x.globalAlpha = 0.75;
+      x.beginPath();
+      x.arc(s * 0.60, s * 0.39, s * 0.10, 0, Math.PI * 2);
+      x.fill();
+
+      x.globalAlpha = 0.82;
+      x.fillStyle = pal[0] || '#7aa69f';
+      x.beginPath();
+      x.moveTo(s * 0.12, s * 0.58);
+      x.bezierCurveTo(s * 0.34, s * 0.49, s * 0.62, s * 0.64, s * 0.88, s * 0.52);
+      x.lineTo(s * 0.88, s * 0.90);
+      x.lineTo(s * 0.12, s * 0.90);
+      x.closePath();
       x.fill();
       x.restore();
     }
-    x.restore();
 
     const url = c.toDataURL('image/png');
     thumbCache.set(key, url);
@@ -1175,6 +1207,12 @@
   window.SPRITES = {
     srand: srand,
     BALL_SPECS: BALL_SPECS,
+    setTheme: function (themeObj) {
+      rebuildParsedSpecs(themeObj);
+    },
+    getTheme: function () {
+      return currentTheme;
+    },
     paintBallCell: paintBallCell,
     buildBallAtlas: buildBallAtlas,
     buildFrontBallAtlases: buildFrontBallAtlases,

@@ -130,12 +130,138 @@
     return [1 - b, b];
   }
 
-  // ==================== 环境与视口状态 ====================
+  // ==================== 环境、视口与世界之窗个性化推流状态 ====================
   const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
   let prefersReduced = reducedMotionQuery.matches;
   let motionPaused = false;
   let currentLang = DATA.defaultLang || 'zh';
   let isTransition = false;
+  const isHttpServer = location.protocol === 'http:' || location.protocol === 'https:';
+
+  function cloneJson(obj) {
+    return JSON.parse(JSON.stringify(obj));
+  }
+
+  function loadLocalJson(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function saveLocalJson(key, val) {
+    try {
+      localStorage.setItem(key, JSON.stringify(val));
+    } catch (_) {}
+  }
+
+  const appState = {
+    preferences: (function () {
+      const base = cloneJson(DATA.DEFAULT_PREFERENCES);
+      const saved = loadLocalJson('ww_prefs_v2', null);
+      if (saved && typeof saved === 'object') {
+        if (saved.theme && DATA.THEMES[saved.theme]) base.theme = saved.theme;
+        if (saved.fontPreset && DATA.FONT_PRESETS[saved.fontPreset]) base.fontPreset = saved.fontPreset;
+        if (saved.seenMode) base.seenMode = saved.seenMode;
+        if (typeof saved.freeformNote === 'string') base.freeformNote = saved.freeformNote;
+        if (Array.isArray(saved.channels) && saved.channels.length === 6) {
+          base.channels = saved.channels.map(function (ch, idx) {
+            return Object.assign({}, base.channels[idx], ch);
+          });
+        }
+      }
+      return base;
+    })(),
+    seenMap: (function () {
+      const saved = loadLocalJson('ww_seen_v2', null);
+      return (saved && typeof saved === 'object' && !Array.isArray(saved)) ? saved : {};
+    })(),
+    favorites: (function () {
+      const saved = loadLocalJson('ww_favorites_v1', []);
+      return Array.isArray(saved) ? saved : [];
+    })(),
+    curatedPages: [],
+    livePool: [],
+    aiInbox: [],
+    lwaCatalogUrl: DATA.OBSIDIAN_CATALOG_URL || '',
+    lwaAskUrl: DATA.OBSIDIAN_ASK_URL || '',
+    currentSeed: 20261114
+  };
+
+  function getActiveTheme() {
+    return DATA.THEMES[appState.preferences.theme] || DATA.THEMES['celadon-mist'];
+  }
+
+  function getActiveFontPreset() {
+    return DATA.FONT_PRESETS[appState.preferences.fontPreset]
+      || DATA.FONT_PRESETS['caslon-zhuque']
+      || DATA.FONT_PRESETS['classic-caslon'];
+  }
+
+  const loadedFontCssUrls = new Set();
+  function ensureFontStylesheet(cssUrl) {
+    if (!cssUrl || loadedFontCssUrls.has(cssUrl)) return;
+    const existing = document.querySelectorAll('link[rel="stylesheet"]');
+    for (let i = 0; i < existing.length; i++) {
+      if (existing[i].href === cssUrl || existing[i].getAttribute('href') === cssUrl) {
+        loadedFontCssUrls.add(cssUrl);
+        return;
+      }
+    }
+    loadedFontCssUrls.add(cssUrl);
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = cssUrl;
+    document.head.appendChild(link);
+  }
+
+  function resolveImgUrl(rawUrl) {
+    if (!rawUrl) return '';
+    if (rawUrl.indexOf('data:') === 0 || rawUrl.indexOf('/api/') === 0) return rawUrl;
+    if (isHttpServer && rawUrl.indexOf('https://') === 0) {
+      return '/api/img?u=' + encodeURIComponent(rawUrl);
+    }
+    return rawUrl;
+  }
+
+  function syncThemeCssVars(theme) {
+    const root = document.documentElement;
+    root.style.setProperty('--accent', theme.accent);
+    root.style.setProperty('--accent-soft', theme.accentSoft);
+    root.style.setProperty('--bg', theme.bgHex);
+    root.style.setProperty('--ink', theme.ink);
+    root.style.setProperty('--sub-ink', theme.subInk);
+    root.style.setProperty('--footer-bg', theme.footerBg);
+    root.style.setProperty('--curtain-bg', theme.curtainBg);
+    if (theme.lineColors) {
+      Object.keys(theme.lineColors).forEach(function (k) {
+        PHY.lineColors[k] = theme.lineColors[k];
+      });
+    }
+  }
+
+  function syncFontCssVars(font) {
+    if (!font) return;
+    ensureFontStylesheet(font.cssUrl);
+    const root = document.documentElement;
+    root.style.setProperty('--font-display', font.enDisplay);
+    root.style.setProperty('--font-sans', font.enSans);
+    root.style.setProperty('--font-zh-body', font.zhBody);
+    root.style.setProperty('--font-zh-ui', font.zhUi);
+    root.style.setProperty('--font-zh-weight', font.zhBodyWeight || '400');
+  }
+
+  // 首屏绘制前立即同步主题釉色、字体与本地去重列表，零闪烁
+  (function initBootAppearance() {
+    const initTheme = getActiveTheme();
+    const initFont = getActiveFontPreset();
+    syncThemeCssVars(initTheme);
+    syncFontCssVars(initFont);
+    SP.setTheme(initTheme);
+    DATA.sections = DATA.buildWindowFeed([], appState.preferences, appState.seenMap, [], appState.currentSeed);
+  })();
 
   let W = window.innerWidth;
   let H = window.innerHeight;
@@ -169,6 +295,7 @@
     document.getElementById('gl-loading').style.display = 'none';
     return;
   }
+  document.body.classList.add('webgl-art-mode');
 
   const quadBuf = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
@@ -484,26 +611,38 @@
     fragColor = vec4(col, 1.0);
   }`;
 
-  // middle_frg.js & blurStage_frg.js (31 抽头 Alpha 加权高斯模糊，空白处保白 [1,1,1,0])
+  // middle_frg.js & blurStage_frg.js (9 抽头硬件双线性插值 Alpha 加权高斯模糊：等效 31 抽头胶质宽度，纹理采样减少 71%！)
   const FS_BLUR = `#version 300 es
   precision highp float;
   uniform sampler2D tex;
   uniform vec2 uStep;
-  uniform float uWeights[16];
   in vec2 vUv;
   out vec4 fragColor;
   void main() {
-    vec3 sumRgb = vec3(0.0);
-    float sumA = 0.0;
-    float sumW = 0.0;
-    for (int i = -15; i <= 15; i++) {
-      int wi = 15 - (i < 0 ? -i : i);
-      float w = uWeights[wi];
-      vec4 c = texture(tex, vUv + uStep * float(i));
-      float vol = w * c.a;
-      sumRgb += c.rgb * vol;
-      sumA += c.a * w;
-      sumW += vol;
+    const float offs[5] = float[5](0.0, 1.407333, 3.294215, 5.181810, 7.069926);
+    const float wgts[5] = float[5](0.204164, 0.180174, 0.123832, 0.066282, 0.027630);
+    vec2 stepUv = uStep * 1.38;
+
+    vec4 c0 = texture(tex, vUv);
+    float vol0 = wgts[0] * c0.a;
+    vec3 sumRgb = c0.rgb * vol0;
+    float sumA = c0.a * wgts[0];
+    float sumW = vol0;
+
+    for (int i = 1; i < 5; i++) {
+      float w = wgts[i];
+      vec2 d = stepUv * offs[i];
+      vec4 cp = texture(tex, vUv + d);
+      float vp = w * cp.a;
+      sumRgb += cp.rgb * vp;
+      sumA += cp.a * w;
+      sumW += vp;
+
+      vec4 cn = texture(tex, vUv - d);
+      float vn = w * cn.a;
+      sumRgb += cn.rgb * vn;
+      sumA += cn.a * w;
+      sumW += vn;
     }
     vec3 outRgb = sumW > 1e-6 ? (sumRgb / sumW) : vec3(1.0);
     fragColor = vec4(outRgb, sumA);
@@ -539,6 +678,69 @@
     float effectLight = effectCol.r * 0.11;
     vec3 rgb = min(col1.rgb + noiseLight + effectLight, 1.0);
     fragColor = vec4(rgb, alpha);
+  }`;
+
+  // 子泡泡放大全画幅液态水波折射渲染着色器（严格贴合融球有机边界 + 球面微透镜 + 釉彩肥皂泡高光边）
+  const FS_ART_BUBBLE = `#version 300 es
+  precision highp float;
+  uniform sampler2D uArt;
+  uniform sampler2D uBlur;
+  uniform sampler2D uNoise;
+  uniform sampler2D uEffect;
+  uniform vec2 uCanvasPx;
+  uniform vec2 uAsp;
+  uniform float uTime;
+  uniform float uStrength;
+  uniform float uHover;
+  uniform float uAlpha;
+  in vec2 vUv;
+  out vec4 fragColor;
+  void main() {
+    vec2 pLocal = (vUv - 0.5) * 2.0;
+    float r2 = dot(pLocal, pLocal);
+    if (r2 >= 1.0) discard;
+    float rLocal = sqrt(r2);
+
+    vec2 sUv = gl_FragCoord.xy / uCanvasPx;
+    vec4 effectCol = texture(uEffect, sUv);
+    vec4 noiseCol = texture(uNoise, vec2(sUv.x * uAsp.x, sUv.y * uAsp.y));
+    vec2 effectUv = sUv + sin(effectCol.r) * 0.025;
+    vec2 pScreen = -1.0 + 2.0 * effectUv;
+    float ss = sin(-uTime + length(pScreen * 14.0));
+    vec2 newUv = effectUv + uStrength * vec2(ss, ss);
+
+    vec4 col1 = texture(uBlur, newUv);
+    float bubbleMask = clamp(col1.a * 80.0 - 10.0, 0.0, 1.0);
+    if (bubbleMask <= 0.004) discard;
+
+    // 柔和内收 10% 留出清透水彩包浆边，同时防止水滴回流颈部染色
+    float innerEnv = 1.0 - smoothstep(0.66, 0.96, rLocal);
+    float mask = bubbleMask * innerEnv * uAlpha;
+    if (mask <= 0.004) discard;
+
+    // 悬停时水波平息并轻微拉近画幅，常态下随水纹与鼠标波浪轻盈起伏
+    float calm = mix(1.0, 0.28, uHover);
+    vec2 lens = pLocal * (1.0 - 0.065 * r2);
+    vec2 ripple = vec2(
+      sin(-uTime * 1.18 + pLocal.y * 5.4 + noiseCol.r * 4.2),
+      cos(-uTime * 1.06 + pLocal.x * 5.4 + noiseCol.g * 4.2)
+    ) * (0.0115 * calm);
+    vec2 cursorWave = vec2(sin(effectCol.r * 3.1), cos(effectCol.r * 3.1)) * (effectCol.r * 0.036);
+    float zoom = mix(0.92, 0.85, uHover);
+    vec2 artUv = clamp(lens * 0.5 * zoom + 0.5 + ripple + cursorWave, 0.012, 0.988);
+
+    vec3 artRgb = texture(uArt, artUv).rgb;
+
+    // 3D 球面边缘水彩包浆融合 + 左上方月牙清透高光 + 水波焦散提亮
+    float rimGlaze = smoothstep(0.42, 0.94, rLocal) * 0.34;
+    vec3 glazed = mix(artRgb, min(col1.rgb + 0.06, 1.0), rimGlaze);
+    float nz = sqrt(max(0.02, 1.0 - r2));
+    vec3 nrm = normalize(vec3(pLocal.x, pLocal.y, nz));
+    float spec = pow(clamp(dot(nrm, normalize(vec3(-0.42, 0.54, 0.73))), 0.0, 1.0), 16.0) * 0.22;
+    float rimGlow = smoothstep(0.56, 0.90, rLocal) * (1.0 - smoothstep(0.90, 0.98, rLocal)) * 0.14;
+    vec3 finalRgb = min(glazed + spec + rimGlow + effectCol.r * 0.11, 1.0);
+
+    fragColor = vec4(finalRgb, mask * 0.95);
   }`;
 
   // frontDisplay_frg.js (1:1 反相前景水晶小气泡合成：配合 RT.front [1,1,1,0] 清屏天然生成清透肥皂泡折射细边)
@@ -592,20 +794,112 @@
     lines: compileProgram('lines', VS_LINES, FS_LINES),
     blur: compileProgram('blur', VS_FULL, FS_BLUR),
     display: compileProgram('display', VS_FULL, FS_DISPLAY),
+    artBubble: compileProgram('artBubble', VS_PLANE, FS_ART_BUBBLE),
     frontDisplay: compileProgram('frontDisplay', VS_FULL, FS_FRONT_DISPLAY),
     sand: compileProgram('sand', VS_FULL, FS_SAND)
   };
 
-  const BLUR_WEIGHTS = new Float32Array([
-    0.009431840591298283, 0.0111796064097462,   0.013119389655246888, 0.01524255614516104,
-    0.01753311296138896,  0.019967206688466566, 0.022512962676080703, 0.025130726536367953,
-    0.027773748118105818, 0.030389320952937365, 0.032920358383740696, 0.03530735369638273,
-    0.03749063851662258,  0.03941282465720701,  0.041021292544576475, 0.04227057689119243
-  ]);
+  // 子泡泡高清画幅 WebGL 贴图池（384×384 居中裁切，先以程序化底纹零延迟出图，异步热替换为博物馆实图）
+  const artTexCache = new Map();
+  let wakeRenderLoop = function () {};
+
+  function drawCoverToSquareCanvas(imgOrCanvas, size) {
+    const cnv = document.createElement('canvas');
+    cnv.width = size;
+    cnv.height = size;
+    const ctx = cnv.getContext('2d');
+    ctx.fillStyle = '#edf1f0';
+    ctx.fillRect(0, 0, size, size);
+    const sw = imgOrCanvas.naturalWidth || imgOrCanvas.width || size;
+    const sh = imgOrCanvas.naturalHeight || imgOrCanvas.height || size;
+    if (sw > 0 && sh > 0) {
+      const scale = Math.max(size / sw, size / sh);
+      const dw = sw * scale;
+      const dh = sh * scale;
+      ctx.drawImage(imgOrCanvas, (size - dw) * 0.5, (size - dh) * 0.5, dw, dh);
+    }
+    return cnv;
+  }
+
+  function getArtBubbleTex(itemObj) {
+    if (!itemObj) return null;
+    const key = String(itemObj.id || itemObj.previewUrl || itemObj.thumbUrl || itemObj.title || 'default');
+    if (artTexCache.has(key)) {
+      return artTexCache.get(key).tex;
+    }
+
+    // 控制显存上限（最多保留 72 张气泡画幅贴图）
+    if (artTexCache.size >= 72) {
+      const oldestKey = artTexCache.keys().next().value;
+      const oldest = artTexCache.get(oldestKey);
+      if (oldest && oldest.tex) gl.deleteTexture(oldest.tex);
+      artTexCache.delete(oldestKey);
+    }
+
+    const placeholderCnv = document.createElement('canvas');
+    placeholderCnv.width = 256;
+    placeholderCnv.height = 256;
+    const pCtx = placeholderCnv.getContext('2d');
+    const pal = (itemObj.palette && itemObj.palette.length >= 2) ? itemObj.palette : ['#8fb3ad', '#eef4f2', '#d7b596'];
+    const grad = pCtx.createLinearGradient(0, 0, 256, 256);
+    grad.addColorStop(0, pal[1] || '#eef4f2');
+    grad.addColorStop(0.55, pal[0] || '#8fb3ad');
+    grad.addColorStop(1, pal[2] || '#d7b596');
+    pCtx.fillStyle = grad;
+    pCtx.fillRect(0, 0, 256, 256);
+
+    const entry = { tex: createTex(placeholderCnv), loaded: false };
+    artTexCache.set(key, entry);
+
+    // 先把精绘矢量/语录纹章画上去（对纯句子卡片即是最终高雅纹章）
+    const fallbackDataUrl = SP.buildThumbDataURL(itemObj, 320);
+    const fbImg = new Image();
+    fbImg.decoding = 'async';
+    fbImg.onload = function () {
+      if (!entry.loaded && artTexCache.has(key)) {
+        updateTex(entry.tex, drawCoverToSquareCanvas(fbImg, 320));
+        wakeRenderLoop();
+      }
+    };
+    fbImg.src = fallbackDataUrl;
+
+    const rawCandidate = (itemObj.kind !== 'quote')
+      ? (itemObj.previewUrl || itemObj.thumbUrl || itemObj.fullUrl || '')
+      : '';
+    if (rawCandidate) {
+      const primaryUrl = resolveImgUrl(rawCandidate);
+      const realImg = new Image();
+      realImg.crossOrigin = 'anonymous';
+      realImg.decoding = 'async';
+      realImg.onload = function () {
+        if (!artTexCache.has(key)) return;
+        entry.loaded = true;
+        updateTex(entry.tex, drawCoverToSquareCanvas(realImg, 384));
+        wakeRenderLoop();
+      };
+      realImg.onerror = function () {
+        if (primaryUrl !== rawCandidate) {
+          const retry = new Image();
+          retry.crossOrigin = 'anonymous';
+          retry.decoding = 'async';
+          retry.onload = function () {
+            if (!artTexCache.has(key)) return;
+            entry.loaded = true;
+            updateTex(entry.tex, drawCoverToSquareCanvas(retry, 384));
+            wakeRenderLoop();
+          };
+          retry.src = rawCandidate;
+        }
+      };
+      realImg.src = primaryUrl;
+    }
+
+    return entry.tex;
+  }
 
   // ==================== 程序化贴图初始化 ====================
-  const ballAtlasObj = SP.buildBallAtlas(540);
-  const frontAtlases = SP.buildFrontBallAtlases(512);
+  const ballAtlasObj = SP.buildBallAtlas(512);
+  const frontAtlases = SP.buildFrontBallAtlases(448);
   const TEX = {
     balls: createTex(ballAtlasObj.canvas),
     frontSharp: createTex(frontAtlases.sharp),
@@ -615,15 +909,15 @@
     joint: createTex(SP.buildJointAtlas(false, 192)),
     jointBlur: createTex(SP.buildJointAtlas(true, 192)),
     brush: createTex(SP.buildBrushRing(256)),
-    bgColor: createTex(SP.buildBgColor(1024), gl.MIRRORED_REPEAT),
+    bgColor: createTex(SP.buildBgColor(768), gl.MIRRORED_REPEAT),
     sand: createTex(SP.buildSand(512), gl.REPEAT),
-    bgWord: createTex(SP.buildBgWordAtlas(DATA.sections))
+    bgWord: createTex(SP.buildBgWordAtlas(DATA.sections, getActiveFontPreset()))
   };
 
-  // 字体加载完毕后重绘一次 z=-5 衬线背景大标题贴图，确保使用 Libre Caslon Display 真实字形
+  // 字体加载完毕后重绘一次 z=-5 衬线背景大标题贴图，确保使用当前预设真实字形
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(function () {
-      updateTex(TEX.bgWord, SP.buildBgWordAtlas(DATA.sections));
+      updateTex(TEX.bgWord, SP.buildBgWordAtlas(DATA.sections, getActiveFontPreset()));
     });
   }
 
@@ -726,7 +1020,7 @@
 
   // ==================== 离屏 Framebuffers ====================
   const RT = {
-    noise: createRT(512, 512),
+    noise: createRT(256, 256),
     dummy: null,
     middle: null,
     blur: null,
@@ -735,11 +1029,11 @@
   };
 
   function rebuildRenderTargets() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     canvas.width = Math.max(2, Math.round(W * dpr));
     canvas.height = Math.max(2, Math.round(H * dpr));
 
-    const blurScale = (W <= PHY.borderSP && dpr >= 1.2) ? 0.9 : 0.6;
+    const blurScale = (W <= PHY.borderSP) ? 0.52 : 0.38;
     disposeRT(RT.dummy);
     disposeRT(RT.middle);
     disposeRT(RT.blur);
@@ -750,7 +1044,7 @@
     RT.middle = createRT(W * blurScale, H * blurScale);
     RT.blur = createRT(W * blurScale, H * blurScale);
     RT.front = createRT(W, H);
-    RT.effect = createRT(W * 0.5, H * 0.5);
+    RT.effect = createRT(W * 0.4, H * 0.4);
   }
 
   // ==================== 场景状态与节点构建 ====================
@@ -794,45 +1088,48 @@
       return t;
     }
 
-    // Group 0: 顶部红色定制几何标识
+    const bootTheme = getActiveTheme();
+    const bootFont = getActiveFontPreset();
+
+    // Group 0: 顶部矿物釉色定制几何标识
     const gLogo = makeGroup();
-    addSvgText(gLogo, DATA.brand.mark, 2, 42, {
-      'font-family': '"Libre Franklin", "Helvetica Neue", Arial, sans-serif',
+    const logoText = addSvgText(gLogo, DATA.brand.mark, 2, 42, {
+      'font-family': bootFont.enSans,
       'font-weight': '600',
-      'font-size': '33',
-      'letter-spacing': '7.5',
-      'fill': '#e50012'
+      'font-size': '31',
+      'letter-spacing': '7.2',
+      'fill': bootTheme.accent
     });
 
     const serifAttrs = {
-      'font-family': '"Libre Caslon Display", Georgia, serif',
+      'font-family': bootFont.enDisplay,
       'font-weight': '400',
-      'font-size': '130',
+      'font-size': '124',
       'letter-spacing': '-1.5',
-      'fill': '#0e0e0e'
+      'fill': bootTheme.ink
     };
 
     // Group 1-3: 三行错落高对比度衬线大标题（对标原版 890x533 黄金缩进比例）
     const gC1 = makeGroup();
-    addSvgText(gC1, DATA.brand.heroLines[0], 0, 166, serifAttrs);
+    const c1Text = addSvgText(gC1, DATA.brand.heroLines[0], 0, 164, serifAttrs);
 
     const gC2 = makeGroup();
-    addSvgText(gC2, DATA.brand.heroLines[1], 204, 276, serifAttrs);
+    const c2Text = addSvgText(gC2, DATA.brand.heroLines[1], 196, 274, serifAttrs);
 
     const gC3 = makeGroup();
-    addSvgText(gC3, DATA.brand.heroLines[2], 88, 386, serifAttrs);
+    const c3Text = addSvgText(gC3, DATA.brand.heroLines[2], 86, 384, serifAttrs);
 
     // Group 4: 右下三行阶梯式无衬线副标
     const gSab = makeGroup();
     const sabAttrs = {
-      'font-family': '"Libre Franklin", "Helvetica Neue", Arial, sans-serif',
+      'font-family': bootFont.enSans,
       'font-weight': '400',
-      'font-size': '25.5',
-      'letter-spacing': '0.9',
-      'fill': '#141414'
+      'font-size': '24',
+      'letter-spacing': '1.2',
+      'fill': bootTheme.subInk
     };
-    DATA.brand.heroSub.forEach(function (line, idx) {
-      addSvgText(gSab, line, 333 + idx * 36, 442 + idx * 34, sabAttrs);
+    const sabTexts = DATA.brand.heroSub.map(function (line, idx) {
+      return addSvgText(gSab, line, 332 + idx * 34, 442 + idx * 34, sabAttrs);
     });
 
     h1.appendChild(svg);
@@ -840,6 +1137,9 @@
     return {
       root: h1,
       parts: [gLogo, gC1, gC2, gC3, gSab],
+      logoTexts: [logoText],
+      serifTexts: [c1Text, c2Text, c3Text],
+      sabTexts: sabTexts,
       fades: [{ v: 0 }, { v: 0 }, { v: 0 }, { v: 0 }, { v: 0 }],
       titleX: 0
     };
@@ -1074,7 +1374,68 @@
     });
   }
 
-  mainBalls.forEach(function (parentBall) {
+  function attachProgressiveThumb(imgEl, itemObj) {
+    imgEl.decoding = 'async';
+    imgEl.src = SP.buildThumbDataURL(itemObj, 180);
+    // WebGL 液态画幅模式由 getArtBubbleTex 统一按需解码，避免隐藏 DOM 缩略图双倍抢占网络与解码带宽
+    if (document.body.classList.contains('webgl-art-mode')) return;
+    if (!itemObj || itemObj.kind === 'quote' || !itemObj.thumbUrl) return;
+
+    const primarySrc = resolveImgUrl(itemObj.thumbUrl);
+    const rawFallback = itemObj.thumbUrl;
+    const loader = new Image();
+    loader.decoding = 'async';
+    loader.onload = function () {
+      imgEl.src = primarySrc;
+    };
+    loader.onerror = function () {
+      if (primarySrc !== rawFallback && rawFallback) {
+        const retry = new Image();
+        retry.decoding = 'async';
+        retry.onload = function () {
+          imgEl.src = rawFallback;
+        };
+        retry.src = rawFallback;
+      }
+    };
+    loader.src = primarySrc;
+  }
+
+  function destroyUnderForBall(parentBall) {
+    const under = parentBall.under;
+    if (!under) return;
+    killTweensOf(under, 'dropTimer');
+    killTweensOf(under, 'particleAlpha');
+    under.l1Particles.forEach(function (p) {
+      killTweensOf(p, 'timer');
+      p.running = false;
+    });
+    under.l1Nodes.forEach(function (node) {
+      killTweensOf(node);
+      killTweensOf(node.dom);
+      node.drops.forEach(function (dr) {
+        killTweensOf(dr);
+      });
+      if (node.l2) {
+        killTweensOf(node.l2);
+        node.l2.particles.forEach(function (p) { killTweensOf(p, 'timer'); });
+        node.l2.nodes.forEach(function (gn) {
+          killTweensOf(gn);
+          killTweensOf(gn.dom);
+          gn.drops.forEach(function (dr) { killTweensOf(dr); });
+          if (gn.dom && gn.dom.btn && gn.dom.btn.parentNode) {
+            gn.dom.btn.parentNode.removeChild(gn.dom.btn);
+          }
+        });
+      }
+      if (node.dom && node.dom.btn && node.dom.btn.parentNode) {
+        node.dom.btn.parentNode.removeChild(node.dom.btn);
+      }
+    });
+    parentBall.under = null;
+  }
+
+  function buildUnderForBall(parentBall) {
     const sec = parentBall.secData;
     if (!sec) return;
 
@@ -1102,12 +1463,23 @@
       let secondClose = null;
       const imgEls = [];
 
-      if (cData.items && cData.items.length) {
+      if (cData.playlist && cData.playlist.length) {
+        cData.playlist.forEach(function (it, idx) {
+          const im = document.createElement('img');
+          im.className = 'gl-top-sabM-img';
+          im.alt = '';
+          im._itemRef = it;
+          attachProgressiveThumb(im, it);
+          if (idx !== 0) im.style.display = 'none';
+          thum.appendChild(im);
+          imgEls.push(im);
+        });
+      } else if (cData.items && cData.items.length) {
         cData.items.forEach(function (it, idx) {
           const im = document.createElement('img');
           im.className = 'gl-top-sabM-img';
           im.alt = '';
-          im.src = SP.buildThumbDataURL(it, 160);
+          attachProgressiveThumb(im, it);
           if (idx !== 0) im.style.display = 'none';
           thum.appendChild(im);
           imgEls.push(im);
@@ -1122,16 +1494,16 @@
         const im = document.createElement('img');
         im.className = 'gl-top-sabM-img';
         im.alt = '';
-        im.src = SP.buildThumbDataURL(cData, 160);
+        attachProgressiveThumb(im, cData.item || cData);
         thum.appendChild(im);
         imgEls.push(im);
       }
 
       fixStage.appendChild(btn);
 
-      // L2 孙节点（仅 01–04 具备）
+      // 兼容旧版 L2 孙节点（当 directLeaf 为 false 时启用）
       let l2Group = null;
-      if (cData.items && cData.items.length) {
+      if (!sec.directLeaf && cData.items && cData.items.length) {
         const l2Nodes = cData.items.map(function (itemData, mIdx) {
           const b2 = document.createElement('button');
           b2.type = 'button';
@@ -1142,7 +1514,7 @@
           const im2 = document.createElement('img');
           im2.className = 'gl-top-sabM-img';
           im2.alt = '';
-          im2.src = SP.buildThumbDataURL(itemData, 160);
+          attachProgressiveThumb(im2, itemData);
           th2.appendChild(im2);
           b2.appendChild(th2);
 
@@ -1185,18 +1557,12 @@
           };
 
           b2.addEventListener('click', function () {
-            openLeafDetail({
-              type: 'l2',
-              sec: sec,
-              l1: cData,
-              item: itemData
-            });
+            openShowcaseFromSection(sec, itemData);
           });
 
           return gNode;
         });
 
-        // L2 连线发光粒子（每条线 6 颗，glSecondSabParticle）
         const l2Particles = [];
         for (let p = 0; p < l2Nodes.length * 6; p++) {
           l2Particles.push({
@@ -1226,6 +1592,8 @@
       const node = {
         groupNum: gIdx,
         data: cData,
+        isHovered: false,
+        hoverLerp: 0,
         kGoal: 0,
         rGoal: 480,
         baseScale: 1,
@@ -1262,14 +1630,30 @@
         l2: l2Group
       };
 
+      btn.addEventListener('pointerenter', function () {
+        node.isHovered = true;
+        showBubblePeekForNode(parentBall, node);
+      });
+      btn.addEventListener('pointerleave', function () {
+        node.isHovered = false;
+        scheduleHideBubblePeek();
+      });
+      btn.addEventListener('focus', function () {
+        node.isHovered = true;
+        showBubblePeekForNode(parentBall, node);
+      });
+      btn.addEventListener('blur', function () {
+        node.isHovered = false;
+        scheduleHideBubblePeek();
+      });
       btn.addEventListener('click', function () {
+        hideBubblePeekNow();
         onL1BallClick(parentBall, gIdx);
       });
 
       return node;
     });
 
-    // L1 连线发光粒子（每条线 8 颗，glSabSelectParticle）
     const l1Particles = [];
     for (let p = 0; p < l1Nodes.length * 8; p++) {
       l1Particles.push({
@@ -1294,7 +1678,35 @@
       l1Nodes: l1Nodes,
       l1Particles: l1Particles
     };
-  });
+  }
+
+  mainBalls.forEach(buildUnderForBall);
+
+  function rebuildAllSections(newSections) {
+    DATA.sections = newSections;
+    Object.keys(secMap).forEach(function (k) { delete secMap[k]; });
+    newSections.forEach(function (s) { secMap[s.id] = s; });
+
+    mainBalls.forEach(function (b) {
+      if (b.id >= 1 && b.id <= 6) {
+        b.isOpen0 = false;
+        b.selectScale = 1;
+        b.openY = 0;
+        b.sabShiftX = 0;
+        b.dom.iconRot = 0;
+        b.secData = secMap[b.id] || null;
+        destroyUnderForBall(b);
+        buildUnderForBall(b);
+      } else if (b.id === 7) {
+        b.openY = 0;
+      }
+      updateBallTargetsAndScale(b);
+    });
+
+    updateTex(TEX.bgWord, SP.buildBgWordAtlas(DATA.sections, getActiveFontPreset()));
+    renderDomCopy();
+    setPageHeight(true);
+  }
 
   // 7. 主连线流动小球（glJoint：7 段 × 3 颗 = 21 颗）
   const jointItems = [];
@@ -1365,7 +1777,9 @@
         node.rGoal = cfg[1];
         node.baseScale = cfg[2];
       } else {
-        const cfg = PHY.l1PC[id][g];
+        const pcList = PHY.l1PC[id] || PHY.l1PC[1];
+        const fallbackExtra = id === 5 ? [-138, 490, 0.96] : [-152, 510, 0.96];
+        const cfg = pcList[g] || fallbackExtra;
         node.kGoal = cfg[0] * DEG;
         node.rGoal = cfg[1];
         node.baseScale = cfg[2];
@@ -1397,7 +1811,8 @@
     const pitch6 = spMode ? b6.cfg.pitch * 1.15 : b6.cfg.pitch;
     let extra = 0;
     if (b6.isOpen0) {
-      extra = spMode ? (pitch6 * b6.ballScale - 180) : (pitch6 * b6.ballScale);
+      // 给 06 底部展开的子泡泡留足 560px 舒展呼吸区，绝不卡在屏幕下沿或被迫收回
+      extra = spMode ? (pitch6 * b6.ballScale - 240) : (-560 * b6.ballScale);
     }
     const h = spMode
       ? Math.abs(b6.bottomY + extra) + 330 * (W / 375)
@@ -1495,14 +1910,14 @@
     setPageHeight(true);
   }
 
-  // ==================== L1 缩略图 1.3 -> 1.0 缩放淡入轮播（glSabSelectBallImgs） ====================
+  // ==================== L1 缩略图 1.3 -> 1.0 缩放淡入轮播（悬停自动定格，点开所见即所得） ====================
   function scheduleThumbCycle(l1Node) {
     if (!l1Node.dom.imgs || l1Node.dom.imgs.length <= 1) return;
     killTweensOf(l1Node.dom, 'imgTimer');
     l1Node.dom.imgTimer = 0;
-    to(l1Node.dom, 'imgTimer', 1, 2.5, EASE.linear, 0, function () {
+    to(l1Node.dom, 'imgTimer', 1, 3.2, EASE.linear, 0, function () {
       if (!l1Node.dom.btn || l1Node.dom.btn.style.display === 'none' || l1Node.dom.thumOp < 0.5) return;
-      if (!motionPaused && !prefersReduced) {
+      if (!motionPaused && !prefersReduced && !l1Node.isHovered) {
         const list = l1Node.dom.imgs;
         l1Node.dom.imgIdx = (l1Node.dom.imgIdx + 1) % list.length;
         const nextImg = list[l1Node.dom.imgIdx];
@@ -1511,13 +1926,23 @@
         const animState = { op: 0, sc: 1.3 };
         nextImg.style.opacity = '0';
         nextImg.style.transform = 'scale(1.3)';
-        to(animState, 'op', 1, 0.8, EASE.p2io, 0.1 * l1Node.groupNum);
-        to(animState, 'sc', 1, 0.8, EASE.p2io, 0.1 * l1Node.groupNum, function () {
+        to(animState, 'op', 1, 0.85, EASE.p2io, 0.08 * l1Node.groupNum);
+        to(animState, 'sc', 1, 0.85, EASE.p2io, 0.08 * l1Node.groupNum, function () {
           list.forEach(function (el, idx) {
             if (idx !== l1Node.dom.imgIdx) el.style.display = 'none';
           });
         });
         nextImg._animState = animState;
+
+        if (l1Node.data.playlist && l1Node.data.playlist[l1Node.dom.imgIdx]) {
+          const curItem = l1Node.data.playlist[l1Node.dom.imgIdx];
+          if (curItem) {
+            getArtBubbleTex(curItem);
+            l1Node.dom.txt.innerHTML = DATA.formatBilingualBubbleLabel
+              ? DATA.formatBilingualBubbleLabel(curItem)
+              : (curItem.shortTitle || l1Node.data.label[currentLang]);
+          }
+        }
       }
       scheduleThumbCycle(l1Node);
     });
@@ -1531,6 +1956,8 @@
     node.trgScale = 0.1;
     node.wx = parentBall.wx;
     node.wy = parentBall.wy;
+    const initItem = (node.data.playlist && node.data.playlist[node.dom.imgIdx]) || node.data.item || node.data;
+    if (initItem) getArtBubbleTex(initItem);
     to(node, 'trgR', node.rGoal, 1.2, EASE.p3o, 0.15 * node.groupNum);
     to(node, 'trgScale', 1, 1.2, EASE.p3o, 0.10 * node.groupNum);
     to(node, 'selectScale', 1, 0.5, EASE.p2o, 0);
@@ -1653,7 +2080,7 @@
     });
   }
 
-  // 点击 L1 子泡泡（05/06 打开详情卡片；01-04 展开/收起 L2 孙泡泡）
+  // 点击 L1 子泡泡（directLeaf 直接进入双模画卷/播客展厅，定位到当前所见切片）
   function onL1BallClick(parentBall, groupIdx) {
     if (isTransition) return;
     const sec = parentBall.secData;
@@ -1662,11 +2089,10 @@
 
     const clickedNode = under.l1Nodes[groupIdx];
     if (sec.directLeaf) {
-      openLeafDetail({
-        type: 'l1-leaf',
-        sec: sec,
-        item: clickedNode.data
-      });
+      const activeItem = (clickedNode.data.playlist && clickedNode.data.playlist[clickedNode.dom.imgIdx])
+        || clickedNode.data.item
+        || clickedNode.data;
+      openShowcaseFromSection(sec, activeItem);
       return;
     }
 
@@ -1765,6 +2191,7 @@
   // 点击主泡（glTop.topBallClick & glMainBall.topBallClick）
   function toggleMainBall(ballId) {
     if (isTransition) return;
+    hideBubblePeekNow();
     const b = mainBalls[ballId];
     if (!b || ballId < 1 || ballId > 6) return;
 
@@ -1884,7 +2311,27 @@
       }
     }
 
-    setPageHeight(false);
+    // 当点开底部 06 时立即撑开页面高度并柔和将子泡泡滑入舒适视线；同时按策略标记该组气泡已看
+    if (ballId === 6 && b.isOpen0) {
+      setPageHeight(true);
+      const comfortTop = Math.max(scrollCtrl.target, Math.abs(b.bottomY) - H * 0.34);
+      smoothScrollTo(comfortTop, false);
+    } else {
+      setPageHeight(false);
+    }
+
+    if (b.isOpen0 && appState.preferences.seenMode === 'inspect' && b.secData) {
+      const inspectBall = b;
+      setTimeout(function () {
+        if (!inspectBall.isOpen0 || appState.preferences.seenMode !== 'inspect') return;
+        const ids = [];
+        (inspectBall.secData.children || []).forEach(function (ch) {
+          if (ch.item && ch.item.id) ids.push(ch.item.id);
+          else if (ch.id) ids.push(ch.id);
+        });
+        if (ids.length) markItemsSeen(ids);
+      }, 1200);
+    }
   }
 
   function closeAllMainBalls() {
@@ -1956,106 +2403,2875 @@
     }
   };
 
-  // ==================== 详情卡片预览与转场动画（glTransitionBall + <dialog closedby="any">） ====================
-  const detailDialog = document.getElementById('detail-dialog');
-  const detailArtImg = document.getElementById('detail-art-img');
-  const detailTag = document.getElementById('detail-tag');
-  const detailTitle = document.getElementById('detail-title');
-  const detailSubtitle = document.getElementById('detail-subtitle');
-  const detailBody = document.getElementById('detail-body');
-  const detailMeta = document.getElementById('detail-meta');
-  const detailBackBtn = document.getElementById('detail-back-btn');
+  // ==================== 6款字体试衣间、气泡速览卡、非Top-Layer抽屉与三态一体漫游展厅 ====================
+  const THEME_ORDER = ['celadon-mist', 'rice-paper', 'mother-of-pearl', 'soft-classic'];
+  const FONT_ORDER = [
+    'caslon-zhuque',
+    'bodoni-huiwen',
+    'classic-caslon',
+    'cormorant-wenkai',
+    'instrument-oldsong',
+    'playfair-bright'
+  ];
 
-  // Safari 等尚未支持 HTMLDialogElement.prototype.closedBy 浏览器的背景轻点关闭回退
-  if (detailDialog && !('closedBy' in HTMLDialogElement.prototype)) {
-    detailDialog.addEventListener('click', function (event) {
-      if (event.target !== detailDialog) return;
-      const rect = detailDialog.getBoundingClientRect();
-      const isInDialog = (
-        rect.top <= event.clientY &&
-        event.clientY <= rect.top + rect.height &&
-        rect.left <= event.clientX &&
-        event.clientX <= rect.left + rect.width
-      );
-      if (!isInDialog) detailDialog.close();
+  const siteHeaderEl = document.getElementById('site-header');
+  const shuffleBtn = document.getElementById('shuffle-btn');
+  const shuffleLabelEl = document.getElementById('shuffle-label');
+  const eraGalleryBtn = document.getElementById('era-gallery-btn');
+  const eraGalleryLabel = document.getElementById('era-gallery-label');
+  const favGalleryBtn = document.getElementById('fav-gallery-btn');
+  const favGalleryLabel = document.getElementById('fav-gallery-label');
+  const favCountBadge = document.getElementById('fav-count-badge');
+  const topWikiForm = document.getElementById('top-wiki-form');
+  const topWikiInput = document.getElementById('top-wiki-input');
+  const topWikiSuggest = document.getElementById('top-wiki-suggest');
+  const themeCycleBtn = document.getElementById('theme-cycle-btn');
+  const themeBtnLabel = document.getElementById('theme-btn-label');
+  const fontPickerWrap = document.getElementById('font-picker-wrap');
+  const fontCycleBtn = document.getElementById('font-cycle-btn');
+  const fontBtnLabel = document.getElementById('font-btn-label');
+  const fontPickerMenu = document.getElementById('font-picker-menu');
+  const fontPickerList = document.getElementById('font-picker-list');
+  const tunerOpenBtn = document.getElementById('tuner-open-btn');
+  const tunerBtnLabel = document.getElementById('tuner-btn-label');
+  const seenCountBadge = document.getElementById('seen-count-badge');
+
+  const drawerFavSection = document.getElementById('drawer-fav-section');
+  const drawerFavCount = document.getElementById('drawer-fav-count');
+  const drawerOpenFavAll = document.getElementById('drawer-open-fav-all');
+  const drawerFavGrid = document.getElementById('drawer-fav-grid');
+  const drawerPagesSection = document.getElementById('drawer-pages-section');
+  const drawerPagesList = document.getElementById('drawer-pages-list');
+
+  // 子泡泡悬停速览与一键直达卡（遵循 WCAG 3.2.1 绝不抢夺键盘焦点）
+  const bubblePeekCard = document.getElementById('bubble-peek-card');
+  const peekBadgeEl = document.getElementById('peek-badge');
+  const peekStepperEl = document.getElementById('peek-stepper');
+  const peekPrevBtn = document.getElementById('peek-prev-btn');
+  const peekNextBtn = document.getElementById('peek-next-btn');
+  const peekStepText = document.getElementById('peek-step-text');
+  const peekTitleEl = document.getElementById('peek-title');
+  const peekEnEl = document.getElementById('peek-en');
+  const peekDescEl = document.getElementById('peek-desc');
+  const peekOpenSplitBtn = document.getElementById('peek-open-split');
+  const peekOpenStageBtn = document.getElementById('peek-open-stage');
+  const peekOpenGalleryBtn = document.getElementById('peek-open-gallery');
+  const peekFavBtn = document.getElementById('peek-fav-btn');
+  const peekSourceLink = document.getElementById('peek-source-link');
+
+  const tunerDialog = document.getElementById('tuner-dialog');
+  const tunerBackdrop = document.getElementById('tuner-backdrop');
+  const tunerCloseBtn = document.getElementById('tuner-close-btn');
+  const tunerFavCount = document.getElementById('tuner-fav-count');
+  const tunerOpenFavGallery = document.getElementById('tuner-open-fav-gallery');
+  const tunerFavStrip = document.getElementById('tuner-fav-strip');
+  const tunerThemeGrid = document.getElementById('tuner-theme-grid');
+  const tunerFontGrid = document.getElementById('tuner-font-grid');
+  const tunerSeenStat = document.getElementById('tuner-seen-stat');
+  const tunerSeenSeg = document.getElementById('tuner-seen-seg');
+  const tunerResetSeenBtn = document.getElementById('tuner-reset-seen');
+  const tunerNoteEl = document.getElementById('tuner-note');
+  const tunerChannelsList = document.getElementById('tuner-channels-list');
+  const tunerSyncMsg = document.getElementById('tuner-sync-msg');
+  const tunerSaveOnlyBtn = document.getElementById('tuner-save-only');
+  const tunerApplyShuffleBtn = document.getElementById('tuner-apply-shuffle');
+
+  const lwaOpenLink = document.getElementById('lwa-open-link');
+  const lwaBtnLabel = document.getElementById('lwa-btn-label');
+
+  // 三态一体展厅 DOM（#showcase-dialog：gallery | split | stage）
+  const showcaseDialog = document.getElementById('showcase-dialog');
+  const scEyebrow = document.getElementById('sc-eyebrow');
+  const scCounter = document.getElementById('sc-counter');
+  const scPrevBtn = document.getElementById('sc-prev-btn');
+  const scNextBtn = document.getElementById('sc-next-btn');
+  const scTabGallery = document.getElementById('sc-tab-gallery');
+  const scTabSplit = document.getElementById('sc-tab-split');
+  const scTabStage = document.getElementById('sc-tab-stage');
+  const scFavBtn = document.getElementById('sc-fav-btn');
+  const scOpenFavBtn = document.getElementById('sc-open-fav-btn');
+  const scFavCount = document.getElementById('sc-fav-count');
+  const scSigMoreBtn = document.getElementById('sc-sig-more');
+  const scSigLessBtn = document.getElementById('sc-sig-less');
+  const scSourceLink = document.getElementById('sc-source-link');
+  const scLwaTopLink = document.getElementById('sc-lwa-top-link');
+  const scCloseBtn = document.getElementById('sc-close-btn');
+
+  const scDomMuseumBtn = document.getElementById('sc-dom-museum');
+  const scDomLandscapeBtn = document.getElementById('sc-dom-landscape');
+  const scFacetPills = document.getElementById('sc-facet-pills');
+  const scRandomJumpBtn = document.getElementById('sc-random-jump-btn');
+
+  // 模式 1：时代/国家/秘境 滚动瀑布长卷
+  const scGalleryView = document.getElementById('sc-gallery-view');
+  const scGalEyebrow = document.getElementById('sc-gal-eyebrow');
+  const scGalTitle = document.getElementById('sc-gal-title');
+  const scGalSub = document.getElementById('sc-gal-sub');
+  const scCuratorBanner = document.getElementById('sc-curator-banner');
+  const scCuratorMeta = document.getElementById('sc-curator-meta');
+  const scCuratorNote = document.getElementById('sc-curator-note');
+  const scGalGrid = document.getElementById('sc-gal-grid');
+  const scGalMoreBtn = document.getElementById('sc-gal-more-btn');
+
+  // 模式 2：左 4K 原图 + 右完整维基百科全章与 LWA 收藏库并排深读
+  const scSplitView = document.getElementById('sc-split-view');
+  const scSplitCanvas = document.getElementById('sc-split-canvas');
+  const scSplitImg = document.getElementById('sc-split-img');
+  const scSplitQuoteCard = document.getElementById('sc-split-quote-card');
+  const scSqKicker = document.getElementById('sc-sq-kicker');
+  const scSqQuote = document.getElementById('sc-sq-quote');
+  const scSqSub = document.getElementById('sc-sq-sub');
+  const scSplitFitBtn = document.getElementById('sc-split-fit-btn');
+  const scSplitResetZoomBtn = document.getElementById('sc-split-reset-zoom');
+  const scSplitToFullBtn = document.getElementById('sc-split-to-full');
+  const scSplitMapLink = document.getElementById('sc-split-map-link');
+  const scSplitTitle = document.getElementById('sc-split-title');
+  const scSplitEn = document.getElementById('sc-split-en');
+  const scSplitSub = document.getElementById('sc-split-sub');
+  const scSplitStrip = document.getElementById('sc-split-strip');
+  const scSplitRight = document.getElementById('sc-split-right');
+
+  const dosWikiForm = document.getElementById('dos-wiki-form');
+  const dosWikiInput = document.getElementById('dos-wiki-input');
+  const dosWikiSuggest = document.getElementById('dos-wiki-suggest');
+  const dosLead = document.getElementById('dos-lead');
+  const dosTrail = document.getElementById('dos-trail');
+  const dosRandomWikiBtn = document.getElementById('dos-random-wiki-btn');
+  const dosWikiArticle = document.getElementById('dos-wiki-article');
+  const dosRelatedChips = document.getElementById('dos-related-chips');
+  const dosLwaCard = document.getElementById('dos-lwa-card');
+  const dosAskVaultLink = document.getElementById('dos-ask-vault-link');
+  const dosLwaList = document.getElementById('dos-lwa-list');
+  const dosWindowList = document.getElementById('dos-window-list');
+
+  // 模式 3：100vw × 100dvh 纯享全屏 4K 沉浸画幅
+  const scStageView = document.getElementById('sc-stage-view');
+  const scStageBackdrop = document.getElementById('sc-stage-backdrop');
+  const scStageCanvas = document.getElementById('sc-stage-canvas');
+  const scStageImg = document.getElementById('sc-stage-img');
+  const scStageFavBtn = document.getElementById('sc-stage-fav-btn');
+  const scFitBtn = document.getElementById('sc-fit-btn');
+  const scCaptionToggle = document.getElementById('sc-caption-toggle');
+  const scOpenDossierBtn = document.getElementById('sc-open-dossier-btn');
+  const scCaptionCard = document.getElementById('sc-caption-card');
+  const scCapTag = document.getElementById('sc-cap-tag');
+  const scMapLink = document.getElementById('sc-map-link');
+  const scCapTitle = document.getElementById('sc-cap-title');
+  const scCapSub = document.getElementById('sc-cap-sub');
+  const scCapDetails = document.getElementById('sc-cap-details');
+  const scCapStory = document.getElementById('sc-cap-story');
+  const scCapMeta = document.getElementById('sc-cap-meta');
+  const scStageStrip = document.getElementById('sc-stage-strip');
+
+  let showcaseOpeningBusy = false;
+  let lastModalTriggerEl = null;
+
+  function isModalOpen(el) {
+    return Boolean(el && !el.hidden);
+  }
+
+  function syncModalBodyClass() {
+    const anyModal = isModalOpen(showcaseDialog) || isModalOpen(tunerDialog);
+    document.body.classList.toggle('modal-open', anyModal);
+    // 为保持与 Trancy 等非 Top-Layer 网页扩展浮层共存，展厅与调音台采用 role="dialog" 叠层，开启时对背景地标施加 inert
+    [
+      siteHeaderEl,
+      document.getElementById('global-menu'),
+      document.getElementById('fix-stage'),
+      bubblePeekCard,
+      document.getElementById('scrollFix'),
+      document.getElementById('motion-toggle')
+    ].forEach(function (bgEl) {
+      if (bgEl) bgEl.inert = anyModal;
     });
   }
 
-  function stripBr(htmlStr) {
-    return String(htmlStr || '').replace(/<br\s*\/?>/gi, ' · ');
-  }
-
-  function populateDetailDialog(payload) {
-    const ui = DATA.ui[currentLang];
-    detailBackBtn.textContent = ui.backToBubbles;
-
-    if (payload.type === 'ball0') {
-      const c = ui.ball0Card;
-      detailArtImg.src = SP.buildThumbDataURL({ palette: ['#ee5571', '#fdecef', '#fbd3c6'], motif: 'window' }, 192);
-      detailTag.textContent = c.tag;
-      detailTitle.textContent = c.title;
-      detailSubtitle.textContent = c.subtitle;
-      detailBody.textContent = c.body;
-      detailMeta.innerHTML = c.meta.map(function (m) { return '<span class="detail-pill">' + m + '</span>'; }).join('');
-    } else if (payload.type === 'ball7') {
-      const c = ui.ball7Card;
-      detailArtImg.src = SP.buildThumbDataURL({ palette: ['#fd8f2a', '#fff6e3', '#86d86a'], motif: 'orbit' }, 192);
-      detailTag.textContent = c.tag;
-      detailTitle.textContent = c.title;
-      detailSubtitle.textContent = c.subtitle;
-      detailBody.textContent = c.body;
-      detailMeta.innerHTML = c.meta.map(function (m) { return '<span class="detail-pill">' + m + '</span>'; }).join('');
-    } else if (payload.type === 'l1-leaf') {
-      const sec = payload.sec;
-      const it = payload.item;
-      detailArtImg.src = SP.buildThumbDataURL(it, 192);
-      detailTag.textContent = sec.bgSup + ' · ' + stripBr(sec.label[currentLang]);
-      detailTitle.textContent = stripBr(it.label[currentLang]);
-      detailSubtitle.textContent = sec.bgTitle.join(' ');
-      detailBody.textContent = it.desc[currentLang];
-      detailMeta.innerHTML = [
-        '0' + sec.id + ' · ' + stripBr(sec.label[currentLang]),
-        currentLang === 'zh' ? '点击卡片外部或按 Esc 即可返回原位置' : 'Click outside or press Esc to return'
-      ].map(function (m) { return '<span class="detail-pill">' + m + '</span>'; }).join('');
-    } else {
-      const sec = payload.sec;
-      const l1 = payload.l1;
-      const it = payload.item;
-      detailArtImg.src = SP.buildThumbDataURL(it, 192);
-      detailTag.textContent = sec.bgSup + ' · ' + stripBr(l1.label[currentLang]);
-      detailTitle.textContent = stripBr(it.label[currentLang]);
-      detailSubtitle.textContent = '0' + sec.id + ' ' + stripBr(sec.label[currentLang]);
-      detailBody.textContent = it.desc[currentLang];
-      detailMeta.innerHTML = [
-        sec.bgTitle.join(' '),
-        stripBr(l1.label[currentLang]),
-        currentLang === 'zh' ? '三级记忆切片预览' : 'Level-2 Memory Fragment'
-      ].map(function (m) { return '<span class="detail-pill">' + m + '</span>'; }).join('');
+  function rememberModalTrigger() {
+    const act = document.activeElement;
+    if (act && act !== document.body && (!showcaseDialog || !showcaseDialog.contains(act)) && (!tunerDialog || !tunerDialog.contains(act))) {
+      lastModalTriggerEl = act;
     }
   }
 
-  let currentDetailPayload = null;
+  function restoreModalTriggerFocus() {
+    const el = lastModalTriggerEl;
+    lastModalTriggerEl = null;
+    if (el && typeof el.focus === 'function' && document.contains(el)) {
+      try { el.focus({ preventScroll: true }); } catch (_) {}
+    }
+  }
 
-  function openLeafDetail(payload) {
-    if (isTransition) return;
-    currentDetailPayload = payload;
-    populateDetailDialog(payload);
+  function isAnyModalOpen() {
+    return Boolean(
+      isModalOpen(showcaseDialog) ||
+      isModalOpen(tunerDialog) ||
+      document.body.classList.contains('menu-open')
+    );
+  }
 
-    if (prefersReduced || motionPaused) {
-      historyState.captureBeforeTransition();
-      detailDialog.showModal();
+  function escHtml(str) {
+    return String(str == null ? '' : str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function stripBr(htmlStr) {
+    return String(htmlStr || '').replace(/<br\s*\/?>/gi, ' · ').replace(/<[^>]+>/g, '');
+  }
+
+  function getSeenCount() {
+    return Object.keys(appState.seenMap || {}).length;
+  }
+
+  function updateTopPillLabels() {
+    const th = getActiveTheme();
+    const fn = getActiveFontPreset();
+    const seenTotal = getSeenCount();
+    const favTotal = Array.isArray(appState.favorites) ? appState.favorites.length : 0;
+    if (themeBtnLabel) themeBtnLabel.textContent = currentLang === 'zh' ? th.name : th.enName;
+    if (fontBtnLabel) fontBtnLabel.textContent = fn.shortLabel || fn.name;
+    if (eraGalleryLabel) eraGalleryLabel.textContent = currentLang === 'zh' ? '漫游画卷' : 'Galleries';
+    if (favGalleryLabel) favGalleryLabel.textContent = currentLang === 'zh' ? '画匣' : 'Saved';
+    if (shuffleLabelEl) shuffleLabelEl.textContent = currentLang === 'zh' ? '换一窗' : 'Shuffle';
+    if (tunerBtnLabel) tunerBtnLabel.textContent = currentLang === 'zh' ? '频道与偏好' : 'Feed & AI';
+    if (lwaBtnLabel) lwaBtnLabel.textContent = currentLang === 'zh' ? '收藏库 ↗' : 'Library ↗';
+    if (seenCountBadge) seenCountBadge.textContent = String(seenTotal);
+    if (favCountBadge) favCountBadge.textContent = String(favTotal);
+    if (scFavCount) scFavCount.textContent = String(favTotal);
+    if (drawerFavCount) drawerFavCount.textContent = String(favTotal);
+    if (tunerFavCount) tunerFavCount.textContent = String(favTotal);
+    if (tunerSeenStat) tunerSeenStat.textContent = (currentLang === 'zh' ? '已记 ' : 'Seen ') + seenTotal + (currentLang === 'zh' ? ' 件' : '');
+
+    const catHref = appState.lwaCatalogUrl || DATA.OBSIDIAN_CATALOG_URL || '';
+    const askHref = appState.lwaAskUrl || DATA.OBSIDIAN_ASK_URL || '';
+    if (lwaOpenLink) {
+      lwaOpenLink.hidden = !catHref;
+      if (catHref) lwaOpenLink.href = catHref;
+    }
+    if (scLwaTopLink) {
+      scLwaTopLink.hidden = !catHref;
+      if (catHref) scLwaTopLink.href = catHref;
+    }
+    if (dosLwaCard) {
+      dosLwaCard.hidden = !catHref && !isHttpServer;
+    }
+    if (dosAskVaultLink) {
+      dosAskVaultLink.hidden = !askHref;
+      if (askHref) dosAskVaultLink.href = askHref;
+    }
+  }
+
+  // ==================== 6 款中西文字体下拉试衣间 ====================
+  function setFontMenuOpen(open) {
+    if (!fontPickerMenu || !fontCycleBtn) return;
+    const next = Boolean(open);
+    if (next) {
+      renderFontPickerMenu();
+    }
+    fontPickerMenu.hidden = !next;
+    fontCycleBtn.setAttribute('aria-expanded', next ? 'true' : 'false');
+    if (fontPickerWrap) fontPickerWrap.classList.toggle('open', next);
+  }
+
+  function renderFontPickerMenu() {
+    if (!fontPickerList) return;
+    FONT_ORDER.forEach(function (fid) {
+      const f = DATA.FONT_PRESETS[fid];
+      if (f && f.cssUrl) ensureFontStylesheet(f.cssUrl);
+    });
+
+    fontPickerList.innerHTML = FONT_ORDER.map(function (fid) {
+      const fn = DATA.FONT_PRESETS[fid];
+      if (!fn) return '';
+      const isAct = fn.id === appState.preferences.fontPreset;
+      return (
+        '<button type="button" class="font-opt-btn' + (isAct ? ' active' : '') + '" role="menuitemradio" aria-checked="' + (isAct ? 'true' : 'false') + '" data-pick-font="' + escHtml(fn.id) + '">' +
+          '<div class="font-opt-top">' +
+            '<span class="font-opt-name" style="font-family:' + escHtml(fn.zhBody) + ';font-weight:' + escHtml(fn.zhBodyWeight || '400') + '">' + escHtml(fn.name) + '</span>' +
+            '<span class="font-opt-badge">' + (isAct ? '✓ 当前使用' : '点选即换') + '</span>' +
+          '</div>' +
+          '<div class="font-opt-sample" style="font-family:' + escHtml(fn.zhBody) + ';font-weight:' + escHtml(fn.zhBodyWeight || '400') + '">' +
+            escHtml(fn.sample || fn.desc) +
+          '</div>' +
+        '</button>'
+      );
+    }).join('');
+  }
+
+  // ==================== 子泡泡旁悬浮速览与一键直达卡片 ====================
+  const peekState = {
+    parentBall: null,
+    node: null,
+    hideTimer: null,
+    pointerInsideCard: false
+  };
+
+  function getActiveNodeItem(node) {
+    if (!node || !node.data) return null;
+    const raw = (node.data.playlist && node.data.playlist[node.dom.imgIdx])
+      || node.data.item
+      || node.data;
+    return (DATA.enrichClientItem && raw && raw.id) ? DATA.enrichClientItem(raw) : raw;
+  }
+
+  function positionBubblePeekCard() {
+    if (!bubblePeekCard || bubblePeekCard.hidden || !peekState.node) return;
+    const n = peekState.node;
+    const sx = (W > PHY.borderSP ? n.tPosX : n.wx) || n.wx;
+    const sy = (W > PHY.borderSP ? n.dom.domY : -n.wy) || (-n.wy);
+    const cardW = bubblePeekCard.offsetWidth || 308;
+    const cardH = bubblePeekCard.offsetHeight || 196;
+    const offsetR = Math.round(122 * (n.ballScale || 1) * (n.baseScale || 1)) + 16;
+
+    let left = sx + offsetR;
+    if (left + cardW > W - 16) {
+      left = sx - offsetR - cardW;
+    }
+    left = Math.max(14, Math.min(W - cardW - 14, left));
+    const top = Math.max(70, Math.min(H - cardH - 16, sy - cardH * 0.45));
+    bubblePeekCard.style.transform = 'translate3d(' + Math.round(left) + 'px, ' + Math.round(top) + 'px, 0)';
+  }
+
+  function populateBubblePeekCard() {
+    if (!bubblePeekCard || !peekState.node || !peekState.parentBall) return;
+    const sec = peekState.parentBall.secData;
+    const node = peekState.node;
+    const it = getActiveNodeItem(node);
+    if (!it) return;
+
+    if (peekBadgeEl) {
+      peekBadgeEl.textContent = (sec && sec.bgSup ? sec.bgSup : 'WINDOW') + (it.civilization ? (' · ' + it.civilization) : '');
+    }
+
+    const pl = (node.data && node.data.playlist) || [];
+    if (peekStepperEl && peekStepText) {
+      if (pl.length > 1) {
+        peekStepperEl.hidden = false;
+        peekStepText.textContent = (node.dom.imgIdx + 1) + ' / ' + pl.length;
+      } else {
+        peekStepperEl.hidden = true;
+      }
+    }
+
+    if (peekTitleEl) peekTitleEl.textContent = it.title || '';
+    if (peekEnEl) {
+      const enSub = it.enTitle || it.subtitle || '';
+      peekEnEl.textContent = enSub;
+      peekEnEl.hidden = !enSub;
+    }
+    if (peekDescEl) {
+      const descTxt = it.story || it.quote || '';
+      peekDescEl.textContent = descTxt;
+      peekDescEl.hidden = !descTxt;
+    }
+    if (peekOpenStageBtn) {
+      peekOpenStageBtn.hidden = !isVisualItem(it);
+    }
+    syncHeartBtnState(peekFavBtn, it.id);
+    if (peekSourceLink) {
+      const extHref = it.sourceUrl || it.mapUrl || ('https://zh.wikipedia.org/w/index.php?search=' + encodeURIComponent(inferDefaultWikiTitle(it)));
+      peekSourceLink.href = extHref;
+      peekSourceLink.textContent = it.mapUrl && !it.sourceUrl ? '↗ 坐标地图' : '↗ 原馆藏';
+    }
+    positionBubblePeekCard();
+  }
+
+  function showBubblePeekForNode(parentBall, node) {
+    if (!bubblePeekCard || !parentBall || !node) return;
+    if (isTransition || isAnyModalOpen() || !parentBall.under || parentBall.under.status !== 1 || node.dom.opacity < 0.45) {
+      return;
+    }
+    if (peekState.hideTimer) {
+      clearTimeout(peekState.hideTimer);
+      peekState.hideTimer = null;
+    }
+    peekState.parentBall = parentBall;
+    peekState.node = node;
+    bubblePeekCard.hidden = false;
+    populateBubblePeekCard();
+    requestAnimationFrame(positionBubblePeekCard);
+  }
+
+  function scheduleHideBubblePeek() {
+    if (peekState.hideTimer) clearTimeout(peekState.hideTimer);
+    peekState.hideTimer = setTimeout(function () {
+      if (peekState.pointerInsideCard) return;
+      if (peekState.node && peekState.node.isHovered) return;
+      hideBubblePeekNow();
+    }, 230);
+  }
+
+  function hideBubblePeekNow() {
+    if (peekState.hideTimer) {
+      clearTimeout(peekState.hideTimer);
+      peekState.hideTimer = null;
+    }
+    peekState.pointerInsideCard = false;
+    peekState.node = null;
+    peekState.parentBall = null;
+    if (bubblePeekCard) bubblePeekCard.hidden = true;
+  }
+
+  if (bubblePeekCard) {
+    bubblePeekCard.addEventListener('pointerenter', function () {
+      peekState.pointerInsideCard = true;
+      if (peekState.hideTimer) {
+        clearTimeout(peekState.hideTimer);
+        peekState.hideTimer = null;
+      }
+    });
+    bubblePeekCard.addEventListener('pointerleave', function () {
+      peekState.pointerInsideCard = false;
+      scheduleHideBubblePeek();
+    });
+  }
+
+  function stepPeekNodePlaylist(dir) {
+    const node = peekState.node;
+    if (!node || !node.data || !node.data.playlist || node.data.playlist.length <= 1) return;
+    const len = node.data.playlist.length;
+    node.dom.imgIdx = (node.dom.imgIdx + dir + len) % len;
+    const curItem = node.data.playlist[node.dom.imgIdx];
+    if (curItem) {
+      getArtBubbleTex(curItem);
+      node.dom.txt.innerHTML = DATA.formatBilingualBubbleLabel
+        ? DATA.formatBilingualBubbleLabel(curItem)
+        : (curItem.shortTitle || node.data.label[currentLang]);
+    }
+    populateBubblePeekCard();
+    wakeRenderLoop();
+  }
+
+  if (peekPrevBtn) peekPrevBtn.addEventListener('click', function (e) { e.stopPropagation(); stepPeekNodePlaylist(-1); });
+  if (peekNextBtn) peekNextBtn.addEventListener('click', function (e) { e.stopPropagation(); stepPeekNodePlaylist(1); });
+
+  if (peekOpenSplitBtn) {
+    peekOpenSplitBtn.addEventListener('click', function () {
+      if (!peekState.parentBall || !peekState.node) return;
+      const sec = peekState.parentBall.secData;
+      const it = getActiveNodeItem(peekState.node);
+      hideBubblePeekNow();
+      openShowcaseFromSection(sec, it, 'split');
+    });
+  }
+  if (peekOpenStageBtn) {
+    peekOpenStageBtn.addEventListener('click', function () {
+      if (!peekState.parentBall || !peekState.node) return;
+      const sec = peekState.parentBall.secData;
+      const it = getActiveNodeItem(peekState.node);
+      hideBubblePeekNow();
+      openShowcaseFromSection(sec, it, 'stage');
+    });
+  }
+  if (peekOpenGalleryBtn) {
+    peekOpenGalleryBtn.addEventListener('click', function () {
+      const it = peekState.node ? getActiveNodeItem(peekState.node) : null;
+      const dom = getDomainForItem(it);
+      const fac = (it && it.facet) || 'all';
+      hideBubblePeekNow();
+      openExplorerPreset(dom, fac);
+    });
+  }
+  if (peekFavBtn) {
+    peekFavBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      const it = peekState.node ? getActiveNodeItem(peekState.node) : null;
+      if (it) toggleFavoriteItem(it);
+    });
+  }
+
+  // ==================== 偏好持久化与去重账本 ====================
+  function savePreferences(skipRemote) {
+    appState.preferences.updatedAt = new Date().toISOString();
+    saveLocalJson('ww_prefs_v2', appState.preferences);
+    if (!skipRemote && isHttpServer) {
+      fetch('/api/preferences', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preferences: appState.preferences }),
+        priority: 'low'
+      }).then(function (r) { return r.json(); }).then(function (res) {
+        if (res && res.ok && tunerSyncMsg) {
+          tunerSyncMsg.textContent = '✓ 已同步至 feed-profile/preferences.md';
+        }
+      }).catch(function () {});
+    }
+  }
+
+  function markItemsSeen(ids) {
+    if (!Array.isArray(ids) || !ids.length || appState.preferences.seenMode === 'off') return;
+    const nowIso = new Date().toISOString();
+    const added = [];
+    ids.forEach(function (id) {
+      if (!id) return;
+      if (!appState.seenMap[id]) added.push(id);
+      appState.seenMap[id] = nowIso;
+    });
+    if (!added.length) return;
+    saveLocalJson('ww_seen_v2', appState.seenMap);
+    updateTopPillLabels();
+    if (isHttpServer) {
+      fetch('/api/seen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: added }),
+        priority: 'low'
+      }).catch(function () {});
+    }
+  }
+
+  function clearSeenHistory() {
+    appState.seenMap = {};
+    saveLocalJson('ww_seen_v2', {});
+    updateTopPillLabels();
+    if (isHttpServer) {
+      fetch('/api/seen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reset: true }),
+        priority: 'low'
+      }).catch(function () {});
+    }
+  }
+
+  let openModeSeenTimer = null;
+  function scheduleOpenModeSeenIfNeeded() {
+    if (openModeSeenTimer) clearTimeout(openModeSeenTimer);
+    if (appState.preferences.seenMode !== 'open') return;
+    openModeSeenTimer = setTimeout(function () {
+      if (appState.preferences.seenMode !== 'open') return;
+      const ids = [];
+      DATA.sections.forEach(function (sec) {
+        (sec.children || []).forEach(function (ch) {
+          if (ch.item && ch.item.id) ids.push(ch.item.id);
+        });
+      });
+      if (ids.length) markItemsSeen(ids);
+    }, 3400);
+  }
+
+  function applyTheme(themeId, skipSave) {
+    const theme = DATA.THEMES[themeId] || DATA.THEMES['celadon-mist'];
+    appState.preferences.theme = theme.id;
+    syncThemeCssVars(theme);
+
+    heroDom.logoTexts.forEach(function (t) { t.setAttribute('fill', theme.accent); });
+    heroDom.serifTexts.forEach(function (t) { t.setAttribute('fill', theme.ink); });
+    heroDom.sabTexts.forEach(function (t) { t.setAttribute('fill', theme.subInk); });
+
+    SP.setTheme(theme);
+    updateTex(TEX.balls, SP.buildBallAtlas(480).canvas);
+    const fa = SP.buildFrontBallAtlases(384);
+    updateTex(TEX.frontSharp, fa.sharp);
+    updateTex(TEX.frontSoft, fa.soft);
+    updateTex(TEX.frontCombined, fa.combined);
+    updateTex(TEX.bokeh, SP.buildBokehAtlas(192));
+    updateTex(TEX.joint, SP.buildJointAtlas(false, 192));
+    updateTex(TEX.jointBlur, SP.buildJointAtlas(true, 192));
+    updateTex(TEX.bgColor, SP.buildBgColor(512));
+    updateTex(TEX.bgWord, SP.buildBgWordAtlas(DATA.sections, getActiveFontPreset()));
+
+    updateTopPillLabels();
+    syncTunerActiveCards();
+    wakeRenderLoop();
+    if (!skipSave) savePreferences(false);
+  }
+
+  function applyFontPreset(fontId, skipSave) {
+    const font = DATA.FONT_PRESETS[fontId]
+      || DATA.FONT_PRESETS['caslon-zhuque']
+      || DATA.FONT_PRESETS['classic-caslon'];
+    appState.preferences.fontPreset = font.id;
+    syncFontCssVars(font);
+
+    heroDom.logoTexts.forEach(function (t) { t.setAttribute('font-family', font.enSans); });
+    heroDom.serifTexts.forEach(function (t) { t.setAttribute('font-family', font.enDisplay); });
+    heroDom.sabTexts.forEach(function (t) { t.setAttribute('font-family', font.enSans); });
+
+    updateTex(TEX.bgWord, SP.buildBgWordAtlas(DATA.sections, font));
+    if (document.fonts && document.fonts.load) {
+      Promise.allSettled([
+        document.fonts.load('400 72px ' + font.enDisplay),
+        document.fonts.load((font.zhBodyWeight || '400') + ' 32px ' + font.zhBody)
+      ]).then(function () {
+        if (appState.preferences.fontPreset === font.id) {
+          updateTex(TEX.bgWord, SP.buildBgWordAtlas(DATA.sections, font));
+          wakeRenderLoop();
+        }
+      });
+    }
+
+    updateTopPillLabels();
+    syncTunerActiveCards();
+    if (fontPickerMenu && !fontPickerMenu.hidden) {
+      renderFontPickerMenu();
+    }
+    wakeRenderLoop();
+    if (!skipSave) savePreferences(false);
+  }
+
+  if (themeCycleBtn) {
+    themeCycleBtn.addEventListener('click', function () {
+      const idx = THEME_ORDER.indexOf(appState.preferences.theme);
+      const nextId = THEME_ORDER[(idx + 1 + THEME_ORDER.length) % THEME_ORDER.length];
+      applyTheme(nextId, false);
+    });
+  }
+
+  if (fontCycleBtn) {
+    fontCycleBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      setFontMenuOpen(fontPickerMenu ? fontPickerMenu.hidden : false);
+    });
+  }
+
+  if (fontPickerList) {
+    fontPickerList.addEventListener('click', function (e) {
+      e.stopPropagation();
+      const btn = e.target.closest('[data-pick-font]');
+      if (!btn) return;
+      const fid = btn.getAttribute('data-pick-font');
+      if (fid) applyFontPreset(fid, false);
+    });
+  }
+
+  if (eraGalleryBtn) {
+    eraGalleryBtn.addEventListener('click', function () {
+      openExplorerPreset('museum', 'china-tang-song');
+    });
+  }
+
+  let isShuffling = false;
+  async function shuffleWindow() {
+    if (isShuffling || isTransition) return;
+    hideBubblePeekNow();
+    isShuffling = true;
+    if (shuffleBtn) shuffleBtn.classList.add('is-spinning');
+
+    if (isHttpServer) {
+      try {
+        const ctrl = new AbortController();
+        const tid = setTimeout(function () { ctrl.abort(); }, 5500);
+        const resp = await fetch('/api/feed?refresh=1', { signal: ctrl.signal });
+        clearTimeout(tid);
+        if (resp.ok) {
+          const data = await resp.json();
+          const pool = data && (data.livePool || data.items);
+          if (Array.isArray(pool) && pool.length) {
+            appState.livePool = pool;
+          }
+          if (data && Array.isArray(data.aiInbox)) {
+            appState.aiInbox = data.aiInbox;
+          }
+        }
+      } catch (_) {}
+    }
+
+    appState.currentSeed = Date.now() + Math.floor(Math.random() * 10000);
+    const nextSections = DATA.buildWindowFeed(
+      appState.livePool,
+      appState.preferences,
+      appState.seenMap,
+      appState.aiInbox,
+      appState.currentSeed
+    );
+
+    historyState.topList = [[0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0], [0]];
+    rebuildAllSections(nextSections);
+
+    if (scrollCtrl.target > H * 0.85) {
+      smoothScrollTo(0, false);
+    }
+    wakeRenderLoop();
+    startTopView(false);
+    scheduleOpenModeSeenIfNeeded();
+
+    setTimeout(function () {
+      isShuffling = false;
+      if (shuffleBtn) shuffleBtn.classList.remove('is-spinning');
+    }, 520);
+  }
+
+  if (shuffleBtn) {
+    shuffleBtn.addEventListener('click', function () {
+      shuffleWindow();
+    });
+  }
+
+  // ==================== 频道与 AI 协作偏好抽屉 (#tuner-dialog，非 Top-Layer) ====================
+  function syncTunerActiveCards() {
+    if (tunerThemeGrid) {
+      tunerThemeGrid.querySelectorAll('[data-theme-id]').forEach(function (el) {
+        el.classList.toggle('active', el.getAttribute('data-theme-id') === appState.preferences.theme);
+      });
+    }
+    if (tunerFontGrid) {
+      tunerFontGrid.querySelectorAll('[data-font-id]').forEach(function (el) {
+        el.classList.toggle('active', el.getAttribute('data-font-id') === appState.preferences.fontPreset);
+      });
+    }
+    if (tunerSeenSeg) {
+      tunerSeenSeg.querySelectorAll('[data-seen-mode]').forEach(function (el) {
+        el.classList.toggle('active', el.getAttribute('data-seen-mode') === appState.preferences.seenMode);
+      });
+    }
+  }
+
+  function renderTunerDialog() {
+    if (!tunerDialog) return;
+
+    FONT_ORDER.forEach(function (fid) {
+      const f = DATA.FONT_PRESETS[fid];
+      if (f && f.cssUrl) ensureFontStylesheet(f.cssUrl);
+    });
+
+    if (tunerThemeGrid && !tunerThemeGrid.children.length) {
+      tunerThemeGrid.innerHTML = THEME_ORDER.map(function (tid) {
+        const th = DATA.THEMES[tid];
+        const lCols = th.lineColors || {};
+        return (
+          '<button type="button" class="tuner-card" data-theme-id="' + escHtml(th.id) + '">' +
+            '<span class="tuner-swatches">' +
+              '<i style="background:' + escHtml(th.accent) + '"></i>' +
+              '<i style="background:' + escHtml(lCols[1] || '#9ec2ba') + '"></i>' +
+              '<i style="background:' + escHtml(lCols[3] || '#c3abcf') + '"></i>' +
+              '<i style="background:' + escHtml(th.bgHex) + '"></i>' +
+            '</span>' +
+            '<span class="tuner-card-title">' + escHtml(th.name) + '</span>' +
+            '<span class="tuner-card-sub">' + escHtml(th.enName) + '</span>' +
+          '</button>'
+        );
+      }).join('');
+    }
+
+    if (tunerFontGrid && !tunerFontGrid.children.length) {
+      tunerFontGrid.innerHTML = FONT_ORDER.map(function (fid) {
+        const fn = DATA.FONT_PRESETS[fid];
+        if (!fn) return '';
+        return (
+          '<button type="button" class="tuner-card" data-font-id="' + escHtml(fn.id) + '">' +
+            '<span class="tuner-card-title" style="font-family:' + escHtml(fn.zhBody) + ';font-weight:' + escHtml(fn.zhBodyWeight || '400') + '">' + escHtml(fn.name) + '</span>' +
+            '<span class="tuner-card-sub">' + escHtml(fn.desc) + '</span>' +
+          '</button>'
+        );
+      }).join('');
+    }
+
+    if (tunerNoteEl) {
+      tunerNoteEl.value = appState.preferences.freeformNote || '';
+    }
+
+    if (tunerChannelsList) {
+      tunerChannelsList.innerHTML = (appState.preferences.channels || []).map(function (ch, idx) {
+        const w = Math.max(0, Math.min(5, Math.round(Number(ch.weight) || 0)));
+        return (
+          '<div class="tuner-ch-row" data-ch-idx="' + idx + '">' +
+            '<div class="tuner-ch-top">' +
+              '<span class="tuner-ch-slot">0' + (idx + 1) + '</span>' +
+              '<input type="text" class="tuner-ch-name" value="' + escHtml(ch.title || '') + '" aria-label="频道名称 0' + (idx + 1) + '">' +
+              '<div class="tuner-stepper">' +
+                '<button type="button" class="tuner-step-btn" data-step-dir="-1" aria-label="减少权重">−</button>' +
+                '<span class="tuner-step-val" data-weight-val="' + w + '">' + w + '</span>' +
+                '<button type="button" class="tuner-step-btn" data-step-dir="1" aria-label="增加权重">+</button>' +
+              '</div>' +
+            '</div>' +
+            '<input type="text" class="tuner-ch-query" value="' + escHtml(ch.query || '') + '" placeholder="随便写偏好词（英文/中文皆可，如 Song porcelain / Monet / nebula）">' +
+          '</div>'
+        );
+      }).join('');
+    }
+
+    if (tunerSyncMsg) {
+      tunerSyncMsg.textContent = isHttpServer
+        ? '双向同步：feed-profile/preferences.md'
+        : '离线模式：保存至浏览器本地存储';
+    }
+
+    updateTopPillLabels();
+    syncTunerActiveCards();
+  }
+
+  function collectTunerEditsIntoPrefs() {
+    if (tunerNoteEl) {
+      appState.preferences.freeformNote = tunerNoteEl.value.trim();
+    }
+    if (tunerChannelsList) {
+      tunerChannelsList.querySelectorAll('.tuner-ch-row').forEach(function (row) {
+        const idx = parseInt(row.getAttribute('data-ch-idx'), 10);
+        const ch = appState.preferences.channels[idx];
+        if (!ch) return;
+        const nameInput = row.querySelector('.tuner-ch-name');
+        const queryInput = row.querySelector('.tuner-ch-query');
+        const valSpan = row.querySelector('.tuner-step-val');
+        if (nameInput && nameInput.value.trim()) ch.title = nameInput.value.trim();
+        if (queryInput) ch.query = queryInput.value.trim();
+        if (valSpan) {
+          ch.weight = Math.max(0, Math.min(5, parseInt(valSpan.getAttribute('data-weight-val'), 10) || 0));
+        }
+      });
+    }
+  }
+
+  function openTunerDialog() {
+    if (!tunerDialog) return;
+    rememberModalTrigger();
+    setMenuOpen(false);
+    setFontMenuOpen(false);
+    hideBubblePeekNow();
+    renderTunerDialog();
+    renderDrawerFavoritesAndPages();
+    tunerDialog.hidden = false;
+    syncModalBodyClass();
+    if (tunerCloseBtn) {
+      try { tunerCloseBtn.focus({ preventScroll: true }); } catch (_) {}
+    }
+  }
+
+  function closeTunerDialog() {
+    if (!tunerDialog || tunerDialog.hidden) return;
+    tunerDialog.hidden = true;
+    syncModalBodyClass();
+    wakeRenderLoop();
+    restoreModalTriggerFocus();
+  }
+
+  if (tunerOpenBtn) tunerOpenBtn.addEventListener('click', openTunerDialog);
+  if (tunerCloseBtn) tunerCloseBtn.addEventListener('click', closeTunerDialog);
+  if (tunerBackdrop) tunerBackdrop.addEventListener('click', closeTunerDialog);
+
+  if (tunerThemeGrid) {
+    tunerThemeGrid.addEventListener('click', function (e) {
+      const card = e.target.closest('[data-theme-id]');
+      if (card) applyTheme(card.getAttribute('data-theme-id'), false);
+    });
+  }
+  if (tunerFontGrid) {
+    tunerFontGrid.addEventListener('click', function (e) {
+      const card = e.target.closest('[data-font-id]');
+      if (card) applyFontPreset(card.getAttribute('data-font-id'), false);
+    });
+  }
+  if (tunerSeenSeg) {
+    tunerSeenSeg.addEventListener('click', function (e) {
+      const btn = e.target.closest('[data-seen-mode]');
+      if (!btn) return;
+      appState.preferences.seenMode = btn.getAttribute('data-seen-mode');
+      syncTunerActiveCards();
+      savePreferences(false);
+      scheduleOpenModeSeenIfNeeded();
+    });
+  }
+  if (tunerResetSeenBtn) {
+    tunerResetSeenBtn.addEventListener('click', function () {
+      clearSeenHistory();
+      if (tunerSyncMsg) tunerSyncMsg.textContent = '✓ 已清空已看记录，下次刷新将重新纳入全部馆藏';
+    });
+  }
+  if (tunerChannelsList) {
+    tunerChannelsList.addEventListener('click', function (e) {
+      const stepBtn = e.target.closest('.tuner-step-btn');
+      if (!stepBtn) return;
+      const row = stepBtn.closest('.tuner-ch-row');
+      const valSpan = row && row.querySelector('.tuner-step-val');
+      if (!valSpan) return;
+      const dir = parseInt(stepBtn.getAttribute('data-step-dir'), 10) || 0;
+      const cur = parseInt(valSpan.getAttribute('data-weight-val'), 10) || 0;
+      const next = Math.max(0, Math.min(5, cur + dir));
+      valSpan.setAttribute('data-weight-val', String(next));
+      valSpan.textContent = String(next);
+    });
+  }
+  if (tunerSaveOnlyBtn) {
+    tunerSaveOnlyBtn.addEventListener('click', function () {
+      collectTunerEditsIntoPrefs();
+      savePreferences(false);
+      const rebuilt = DATA.buildWindowFeed(
+        appState.livePool,
+        appState.preferences,
+        appState.seenMap,
+        appState.aiInbox,
+        appState.currentSeed
+      );
+      closeTunerDialog();
+      rebuildAllSections(rebuilt);
+    });
+  }
+  if (tunerApplyShuffleBtn) {
+    tunerApplyShuffleBtn.addEventListener('click', function () {
+      collectTunerEditsIntoPrefs();
+      savePreferences(false);
+      closeTunerDialog();
+      shuffleWindow();
+    });
+  }
+
+  // ==================== 三态一体漫游展厅（1: 时代瀑布画卷 | 2: 图文并排·Wiki | 3: 全屏 4K 沉浸） ====================
+  const showcaseState = {
+    items: [],
+    index: 0,
+    view: 'split', // 'gallery' | 'split' | 'stage'
+    eyebrow: 'WORLD WINDOW',
+    title: '世界之窗',
+    sigRecorded: {},
+    domain: 'museum', // 'museum' | 'landscape'
+    activeFacet: 'all',
+    facetQueues: {},
+    galleryItems: [],
+    galleryPage: 0,
+    galleryLoading: false,
+    isJumping: false,
+    coverOverride: null,
+    splitCover: false,
+    captionHidden: false,
+    zoom: 1.0,
+    panX: 0,
+    panY: 0,
+    dragging: false,
+    dragStartX: 0,
+    dragStartY: 0,
+    splitZoom: 1.0,
+    splitPanX: 0,
+    splitPanY: 0,
+    splitDragging: false,
+    splitDragStartX: 0,
+    splitDragStartY: 0,
+    imgUpgradeSeq: 0,
+    wikiTrail: [],
+    activeWikiTopic: '',
+    currentRelatedPool: [],
+    wikiReqSeq: 0,
+    lastRenderedWikiItemId: '',
+    curatorNote: '',
+    curatorAuthor: '',
+    isFavoritesGallery: false,
+    isCuratedPage: false
+  };
+
+  const wikiClientCache = {};
+
+  function normalizeClientItem(it) {
+    if (!it) return null;
+    return DATA.enrichClientItem ? DATA.enrichClientItem(Object.assign({}, it)) : it;
+  }
+
+  // ==================== 点心收藏（私藏画匣 Gallery）与 Fable 定制特辑书架 ====================
+  function isItemFavorited(itemId) {
+    if (!itemId || !Array.isArray(appState.favorites)) return false;
+    return appState.favorites.some(function (x) { return x && x.id === itemId; });
+  }
+
+  function syncHeartBtnState(btnEl, itemId) {
+    if (!btnEl) return;
+    const fav = isItemFavorited(itemId);
+    btnEl.classList.toggle('is-fav', fav);
+    btnEl.setAttribute('aria-pressed', fav ? 'true' : 'false');
+    const glyph = btnEl.querySelector('.fav-heart-glyph');
+    if (glyph) glyph.textContent = fav ? '♥' : '♡';
+  }
+
+  function syncFavoriteButtonsUI() {
+    const activeItem = showcaseState.items[showcaseState.index];
+    const activeId = activeItem ? activeItem.id : '';
+    syncHeartBtnState(scFavBtn, activeId);
+    syncHeartBtnState(scStageFavBtn, activeId);
+
+    const peekIt = peekState.node ? getActiveNodeItem(peekState.node) : null;
+    syncHeartBtnState(peekFavBtn, peekIt ? peekIt.id : '');
+
+    if (scGalGrid) {
+      scGalGrid.querySelectorAll('.sc-gal-fav-btn[data-fav-id]').forEach(function (btn) {
+        syncHeartBtnState(btn, btn.getAttribute('data-fav-id') || '');
+      });
+    }
+    updateTopPillLabels();
+  }
+
+  function toggleFavoriteItem(rawItem) {
+    const it = normalizeClientItem(rawItem);
+    if (!it || !it.id) return;
+    if (!Array.isArray(appState.favorites)) appState.favorites = [];
+
+    const existIdx = appState.favorites.findIndex(function (x) { return x && x.id === it.id; });
+    let added = false;
+    if (existIdx >= 0) {
+      appState.favorites.splice(existIdx, 1);
+      added = false;
+    } else {
+      appState.favorites.unshift(Object.assign({}, it, { favoritedAt: new Date().toISOString() }));
+      added = true;
+    }
+
+    saveLocalJson('ww_favorites_v1', appState.favorites);
+    syncFavoriteButtonsUI();
+    renderDrawerFavoritesAndPages();
+
+    if (showcaseState.isFavoritesGallery && showcaseState.view === 'gallery') {
+      showcaseState.galleryItems = appState.favorites.slice();
+      showcaseState.items = appState.favorites.slice();
+      renderGalleryView();
+    }
+
+    if (added) {
+      recordPreferenceSignalForItem(it, 'more');
+    }
+
+    if (isHttpServer) {
+      fetch('/api/favorites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: added ? 'add' : 'remove',
+          id: it.id,
+          item: it
+        })
+      }).then(function (r) { return r.ok ? r.json() : null; }).then(function (res) {
+        if (res && Array.isArray(res.favorites)) {
+          appState.favorites = res.favorites.map(normalizeClientItem);
+          saveLocalJson('ww_favorites_v1', appState.favorites);
+          syncFavoriteButtonsUI();
+          renderDrawerFavoritesAndPages();
+        }
+      }).catch(function () {});
+    }
+  }
+
+  function buildSavedThumbButtonsHtml(list, maxCount) {
+    return list.slice(0, maxCount).map(function (it, idx) {
+      const src = isVisualItem(it)
+        ? resolveImgUrl(it.thumbUrl || it.previewUrl || it.fullUrl)
+        : SP.buildThumbDataURL(it, 180);
+      return (
+        '<button type="button" class="drawer-fav-thumb" data-open-fav-idx="' + idx + '" title="' + escHtml(it.title || '') + '">' +
+          '<img src="' + escHtml(src) + '" data-raw-src="' + escHtml(it.thumbUrl || it.previewUrl || '') + '" alt="' + escHtml(it.title || '收藏画作') + '" loading="lazy" decoding="async">' +
+          '<span>' + escHtml(it.shortTitle || it.title || '') + '</span>' +
+        '</button>'
+      );
+    }).join('');
+  }
+
+  function attachMiniThumbFallbacks(rootEl, listRef) {
+    if (!rootEl) return;
+    rootEl.querySelectorAll('img').forEach(function (imgEl, i) {
+      if (imgEl._boundFavErr) return;
+      imgEl._boundFavErr = true;
+      let retriedRaw = false;
+      imgEl.addEventListener('error', function () {
+        const raw = imgEl.getAttribute('data-raw-src') || '';
+        if (!retriedRaw && raw && imgEl.src !== raw) {
+          retriedRaw = true;
+          imgEl.src = raw;
+        } else {
+          const itemObj = listRef[i];
+          imgEl.src = SP.buildThumbDataURL(itemObj || { title: 'Saved' }, 180);
+        }
+      });
+    });
+  }
+
+  function renderDrawerFavoritesAndPages() {
+    const favs = Array.isArray(appState.favorites) ? appState.favorites : [];
+    updateTopPillLabels();
+
+    if (drawerFavGrid) {
+      if (!favs.length) {
+        drawerFavGrid.innerHTML = '<div class="drawer-empty-hint">在任意画作右上角或展厅顶栏点 ♡，即可收入此处私藏画匣随时重看。</div>';
+      } else {
+        drawerFavGrid.innerHTML = buildSavedThumbButtonsHtml(favs, 8);
+        attachMiniThumbFallbacks(drawerFavGrid, favs);
+      }
+    }
+
+    if (tunerFavStrip) {
+      if (!favs.length) {
+        tunerFavStrip.innerHTML = '<div class="drawer-empty-hint">暂无点心收藏 · 逛展时点 ♡ 即可存入画匣。</div>';
+      } else {
+        tunerFavStrip.innerHTML = buildSavedThumbButtonsHtml(favs, 10);
+        attachMiniThumbFallbacks(tunerFavStrip, favs);
+      }
+    }
+
+    const pages = Array.isArray(appState.curatedPages) ? appState.curatedPages : [];
+    if (drawerPagesSection && drawerPagesList) {
+      drawerPagesSection.hidden = pages.length === 0;
+      if (pages.length) {
+        drawerPagesList.innerHTML = pages.slice(0, 8).map(function (pg) {
+          const slug = pg.slug || '';
+          const authorTag = pg.author ? (' · ' + pg.author) : '';
+          return (
+            '<a class="drawer-page-chip" href="/p/' + escHtml(encodeURIComponent(slug)) + '" data-open-page-slug="' + escHtml(slug) + '">' +
+              '<strong>' + escHtml(pg.title || slug) + '</strong>' +
+              '<small>' + escHtml((pg.itemCount || 0) + ' 件风物' + authorTag) + '</small>' +
+            '</a>'
+          );
+        }).join('');
+      }
+    }
+  }
+
+  function openFavoritesGallery(startIdx, viewMode) {
+    closeTunerDialog();
+    setMenuOpen(false);
+    const favs = (appState.favorites || []).map(normalizeClientItem);
+    showcaseState.galleryItems = favs.slice();
+    openShowcase({
+      items: favs.length ? favs : collectAllWindowItems().slice(0, 1),
+      galleryItemsOverride: favs,
+      startIndex: Math.max(0, startIdx || 0),
+      view: viewMode || 'gallery',
+      eyebrow: 'SAVED GALLERY · PERSONAL COLLECTION',
+      title: '私藏画匣 · 点心收藏 (' + favs.length + ')',
+      isFavoritesGallery: true,
+      isCuratedPage: false,
+      curatorNote: ''
+    });
+  }
+
+  function openCuratedPageDoc(pageDoc, pushSlug) {
+    if (!pageDoc) return;
+    closeTunerDialog();
+    setMenuOpen(false);
+    const items = Array.isArray(pageDoc.items) && pageDoc.items.length
+      ? pageDoc.items.map(normalizeClientItem)
+      : collectAllWindowItems();
+    if (pushSlug && pageDoc.slug && window.history && window.history.replaceState) {
+      try {
+        window.history.replaceState(null, '', '/p/' + encodeURIComponent(pageDoc.slug));
+      } catch (_) {}
+    }
+    if (pageDoc.title) {
+      document.title = pageDoc.title + ' — 世界之窗 · 漫游画册';
+    }
+    openShowcase({
+      items: items,
+      galleryItemsOverride: items,
+      startIndex: 0,
+      view: 'gallery',
+      eyebrow: 'CURATED TOPIC · ' + String(pageDoc.author || 'FABLE').toUpperCase(),
+      title: pageDoc.title || '专题漫游特辑',
+      isFavoritesGallery: false,
+      isCuratedPage: true,
+      curatorNote: pageDoc.note || pageDoc.subtitle || '',
+      curatorAuthor: pageDoc.author || 'Fable'
+    });
+  }
+
+  function isVisualItem(it) {
+    return Boolean(it && it.kind !== 'quote' && (it.fullUrl || it.previewUrl || it.thumbUrl));
+  }
+
+  function getDomainForItem(it) {
+    if (!it) return 'museum';
+    if (it.channel === 'landscapes' || it.channel === 'cosmos') return 'landscape';
+    return 'museum';
+  }
+
+  function getFacetMeta(domain, facetId) {
+    const list = domain === 'landscape'
+      ? (DATA.LANDSCAPE_FACETS_UI || [])
+      : (DATA.MUSEUM_FACETS_UI || []);
+    const hit = list.find(function (f) { return f.id === facetId; }) || list[0];
+    return hit || { id: facetId || 'all', label: domain === 'landscape' ? '远方秘境' : '时空馆藏' };
+  }
+
+  function inferDefaultWikiTitle(it) {
+    if (!it) return '世界遗产';
+    if (it.wikiTitle) return it.wikiTitle;
+    const raw = String(it.title || '').split(/[·—\-:：]/)[0].replace(/[《》「」]/g, '').trim();
+    return raw || '艺术史';
+  }
+
+  function collectAllWindowItems() {
+    const out = [];
+    const seenIds = new Set();
+    DATA.sections.forEach(function (sec) {
+      const list = (sec.allChannelItems && sec.allChannelItems.length)
+        ? sec.allChannelItems
+        : (sec.children || []).map(function (c) { return c.item || c; });
+      list.forEach(function (it) {
+        if (it && it.id && !seenIds.has(it.id)) {
+          seenIds.add(it.id);
+          out.push(normalizeClientItem(it));
+        }
+      });
+    });
+    return out.length ? out : DATA.CURATED_POOL.slice(0, 16).map(normalizeClientItem);
+  }
+
+  function openShowcaseFromSection(sec, activeItem, preferredView) {
+    const rawList = (sec && sec.allChannelItems && sec.allChannelItems.length)
+      ? sec.allChannelItems
+      : ((sec && sec.children) || []).map(function (c) { return c.item || c; });
+    const list = (rawList.length ? rawList : collectAllWindowItems()).map(normalizeClientItem);
+    let startIdx = 0;
+    if (activeItem && activeItem.id) {
+      const found = list.findIndex(function (x) { return x && x.id === activeItem.id; });
+      if (found >= 0) {
+        startIdx = found;
+      } else {
+        list.unshift(normalizeClientItem(activeItem));
+        startIdx = 0;
+      }
+    }
+    openShowcase({
+      items: list,
+      startIndex: startIdx,
+      view: preferredView || 'split',
+      eyebrow: (sec && sec.bgSup) || 'WORLD WINDOW',
+      title: sec ? stripBr(sec.label[currentLang]) : '世界之窗'
+    });
+  }
+
+  function openDailyShowcase() {
+    const all = collectAllWindowItems();
+    showcaseState.galleryItems = all.slice();
+    openShowcase({
+      items: all,
+      startIndex: 0,
+      view: 'gallery',
+      eyebrow: 'TODAY · FULL ATLAS STREAM',
+      title: currentLang === 'zh' ? '今日世界之窗 · 全卷瀑布画册' : DATA.ui[currentLang].ball0Sub
+    });
+  }
+
+  function openExplorerPreset(domain, initialFacet) {
+    const dom = domain === 'landscape' ? 'landscape' : 'museum';
+    const fac = initialFacet || 'all';
+    const fallbackList = buildLocalFacetFallback(dom, fac, new Set());
+    const initItems = fallbackList.length ? fallbackList.slice(0, 24) : collectAllWindowItems();
+    showcaseState.galleryItems = initItems.slice();
+    showcaseState.galleryPage = 0;
+    const fMeta = getFacetMeta(dom, fac);
+
+    openShowcase({
+      items: initItems,
+      startIndex: 0,
+      forceDomain: dom,
+      initialFacet: fac,
+      view: 'gallery',
+      eyebrow: dom === 'landscape' ? 'HORIZON 4K GALLERY' : 'MUSEUM ERA GALLERY',
+      title: fMeta.label
+    });
+    loadFacetGalleryStream(dom, fac, false);
+  }
+
+  // 渐进式双阶加载：先秒出 850px 预览图防卡顿，后台静默解码 4K 原图无缝替换（严守 fetchpriority="high"）
+  function attachProgressiveStageImage(imgEl, itemObj, onPreviewOrFullSrc) {
+    if (!imgEl || !itemObj) return;
+    const seq = ++showcaseState.imgUpgradeSeq;
+    imgEl.decoding = 'async';
+    imgEl.setAttribute('fetchpriority', 'high');
+
+    const fastRaw = itemObj.previewUrl || itemObj.thumbUrl || itemObj.fullUrl || '';
+    const fullRaw = itemObj.fullUrl || fastRaw;
+
+    if (!fastRaw) {
+      const gen = SP.buildThumbDataURL(itemObj, 640);
+      imgEl.src = gen;
+      if (onPreviewOrFullSrc) onPreviewOrFullSrc(gen);
       return;
     }
 
-    // 1:1 复刻官网 glMain.transitionMove 聚合转场动画
+    const fastResolved = resolveImgUrl(fastRaw);
+    let retriedFast = false;
+    imgEl.onerror = function () {
+      if (!retriedFast && fastResolved !== fastRaw) {
+        retriedFast = true;
+        imgEl.src = fastRaw;
+        if (onPreviewOrFullSrc) onPreviewOrFullSrc(fastRaw);
+      } else {
+        imgEl.onerror = null;
+        const gen = SP.buildThumbDataURL(itemObj, 640);
+        imgEl.src = gen;
+        if (onPreviewOrFullSrc) onPreviewOrFullSrc(gen);
+      }
+    };
+    imgEl.src = fastResolved;
+    if (onPreviewOrFullSrc) onPreviewOrFullSrc(fastResolved);
+
+    if (fullRaw && fullRaw !== fastRaw) {
+      const fullResolved = resolveImgUrl(fullRaw);
+      const hiLoader = new Image();
+      hiLoader.decoding = 'async';
+      hiLoader.onload = function () {
+        if (seq !== showcaseState.imgUpgradeSeq) return;
+        const activeNow = showcaseState.items[showcaseState.index];
+        if (!activeNow || activeNow.id !== itemObj.id) return;
+        imgEl.src = fullResolved;
+        if (onPreviewOrFullSrc) onPreviewOrFullSrc(fullResolved);
+      };
+      hiLoader.src = fullResolved;
+    }
+  }
+
+  function pad2(n) {
+    return n < 10 ? ('0' + n) : String(n);
+  }
+
+  function syncModeTabsUI() {
+    const mode = showcaseState.view;
+    [
+      [scTabGallery, 'gallery'],
+      [scTabSplit, 'split'],
+      [scTabStage, 'stage']
+    ].forEach(function (pair) {
+      const el = pair[0];
+      const m = pair[1];
+      if (!el) return;
+      const active = mode === m;
+      el.classList.toggle('active', active);
+      el.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+  }
+
+  function updateShowcaseCountersAndSignals() {
+    const total = showcaseState.items.length || 1;
+    const cur = Math.max(0, Math.min(total - 1, showcaseState.index));
+    if (scCounter) scCounter.textContent = pad2(cur + 1) + ' / ' + pad2(total);
+
+    const activeItem = showcaseState.items[cur];
+    if (scEyebrow) {
+      scEyebrow.textContent = (activeItem && activeItem.civilization)
+        || showcaseState.eyebrow
+        || (showcaseState.domain === 'landscape' ? 'HORIZON 4K' : 'MUSEUM 4K');
+    }
+
+    if (scSourceLink && activeItem) {
+      const srcHref = activeItem.sourceUrl || activeItem.mapUrl || ('https://zh.wikipedia.org/w/index.php?search=' + encodeURIComponent(inferDefaultWikiTitle(activeItem)));
+      scSourceLink.href = srcHref;
+      scSourceLink.textContent = (activeItem.mapUrl && !activeItem.sourceUrl) ? '↗ 坐标地图' : '↗ 原馆藏';
+    }
+
+    const rec = activeItem ? showcaseState.sigRecorded[activeItem.id] : null;
+    if (scSigMoreBtn) {
+      scSigMoreBtn.classList.toggle('done', rec === 'more');
+      scSigMoreBtn.textContent = rec === 'more' ? '✓ 已偏爱' : '♡ 偏爱';
+    }
+    if (scSigLessBtn) {
+      scSigLessBtn.classList.toggle('done', rec === 'less');
+      scSigLessBtn.textContent = rec === 'less' ? '✓ 已少推' : '少推';
+    }
+
+    syncFavoriteButtonsUI();
+
+    if (activeItem && activeItem.id && appState.preferences.seenMode !== 'off' && showcaseState.view !== 'gallery') {
+      markItemsSeen([activeItem.id]);
+    }
+  }
+
+  function renderFacetPills() {
+    if (!scFacetPills) return;
+    const domain = showcaseState.domain;
+    if (scDomMuseumBtn) scDomMuseumBtn.classList.toggle('active', domain === 'museum');
+    if (scDomLandscapeBtn) scDomLandscapeBtn.classList.toggle('active', domain === 'landscape');
+
+    const list = domain === 'landscape'
+      ? (DATA.LANDSCAPE_FACETS_UI || [])
+      : (DATA.MUSEUM_FACETS_UI || []);
+
+    if (scRandomJumpBtn && !showcaseState.isJumping && !showcaseState.galleryLoading) {
+      if (showcaseState.view === 'gallery') {
+        scRandomJumpBtn.innerHTML = '<span aria-hidden="true">↻</span> 换一批';
+      } else {
+        scRandomJumpBtn.innerHTML = '<span aria-hidden="true">↻</span> 换一件';
+      }
+    }
+
+    scFacetPills.innerHTML = list.map(function (f) {
+      const isAct = !showcaseState.isFavoritesGallery && !showcaseState.isCuratedPage && f.id === showcaseState.activeFacet;
+      return (
+        '<button type="button" class="sc-facet-pill' + (isAct ? ' active' : '') + '" role="tab" aria-selected="' + (isAct ? 'true' : 'false') + '" data-facet-id="' + escHtml(f.id) + '">' +
+          escHtml(f.label) +
+        '</button>'
+      );
+    }).join('');
+  }
+
+  function attachFilmstripImgFallbacks(containerEl, listRef) {
+    if (!containerEl) return;
+    containerEl.querySelectorAll('.sc-film-btn img').forEach(function (imgEl, idx) {
+      if (imgEl._boundFilmErr) return;
+      imgEl._boundFilmErr = true;
+      let retriedRaw = false;
+      imgEl.addEventListener('error', function () {
+        const raw = imgEl.getAttribute('data-raw-src') || '';
+        if (!retriedRaw && raw && imgEl.src !== raw) {
+          retriedRaw = true;
+          imgEl.src = raw;
+        } else {
+          const itemObj = listRef[idx] || showcaseState.items[idx];
+          imgEl.src = SP.buildThumbDataURL(itemObj || { title: pad2(idx + 1) }, 160);
+        }
+      });
+    });
+  }
+
+  function renderFilmstripInto(containerEl) {
+    if (!containerEl) return;
+    const list = showcaseState.items.slice(0, 40);
+    containerEl.innerHTML = list.map(function (it, idx) {
+      const isAct = idx === showcaseState.index;
+      const rawThumb = (it && (it.thumbUrl || it.previewUrl || it.fullUrl)) || '';
+      const thumbSrc = rawThumb
+        ? resolveImgUrl(rawThumb)
+        : SP.buildThumbDataURL(it, 160);
+      const shortT = String((it && it.title) || '').replace(/^[^·]+·\s*/, '').slice(0, 10) || pad2(idx + 1);
+      return (
+        '<button type="button" class="sc-film-btn' + (isAct ? ' active' : '') + '" role="option" aria-selected="' + (isAct ? 'true' : 'false') + '" data-film-idx="' + idx + '" title="' + escHtml((it && it.title) || '') + '">' +
+          '<img src="' + escHtml(thumbSrc) + '" data-raw-src="' + escHtml(rawThumb) + '" alt="" loading="lazy" decoding="async">' +
+          '<span>' + escHtml(shortT) + '</span>' +
+        '</button>'
+      );
+    }).join('');
+
+    attachFilmstripImgFallbacks(containerEl, list);
+
+    requestAnimationFrame(function () {
+      const actBtn = containerEl.querySelector('.sc-film-btn.active');
+      if (actBtn && actBtn.scrollIntoView) {
+        actBtn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+      }
+    });
+  }
+
+  // ==================== 模式 1：时代 / 文明 / 国家 / 自然纪实 瀑布流滚动长卷 ====================
+  function buildGalleryCardsHtml(itemsList, offsetIdx) {
+    return itemsList.map(function (it, localIdx) {
+      const absIdx = offsetIdx + localIdx;
+      const rawPreview = (it && (it.previewUrl || it.thumbUrl || it.fullUrl)) || '';
+      const imgSrc = isVisualItem(it)
+        ? resolveImgUrl(rawPreview)
+        : SP.buildThumbDataURL(it, 420);
+      const tagStr = it.civilization || (getDomainForItem(it) === 'landscape' ? '4K HORIZON' : 'MUSEUM 4K');
+      const enLine = (it.enTitle && it.enTitle !== it.title) ? it.enTitle : (it.subtitle || '');
+      const descText = it.story || it.quote || '';
+      const fav = isItemFavorited(it.id);
+      return (
+        '<article class="sc-gal-card" data-gal-idx="' + absIdx + '">' +
+          '<div class="sc-gal-media">' +
+            '<img src="' + escHtml(imgSrc) + '" data-raw-src="' + escHtml(rawPreview) + '" alt="' + escHtml(it.title || '') + '" loading="lazy" decoding="async">' +
+            '<span class="sc-gal-badge">' + escHtml(tagStr) + '</span>' +
+            '<button type="button" class="sc-gal-fav-btn fav-heart-btn' + (fav ? ' is-fav' : '') + '" data-fav-idx="' + absIdx + '" data-fav-id="' + escHtml(it.id || '') + '" aria-label="收藏画作" aria-pressed="' + (fav ? 'true' : 'false') + '" title="点心收藏">' +
+              '<span class="fav-heart-glyph" aria-hidden="true">' + (fav ? '♥' : '♡') + '</span>' +
+            '</button>' +
+            '<button type="button" class="sc-gal-full-btn" data-gal-stage="' + absIdx + '" title="纯享全屏 4K 打开">⛶ 4K</button>' +
+          '</div>' +
+          '<div class="sc-gal-body">' +
+            '<h3 class="sc-gal-card-title">' + escHtml(it.title || '') + '</h3>' +
+            (enLine ? '<div class="sc-gal-card-en">' + escHtml(enLine) + '</div>' : '') +
+            (descText ? '<p class="sc-gal-card-desc">' + escHtml(descText) + '</p>' : '') +
+          '</div>' +
+        '</article>'
+      );
+    }).join('');
+  }
+
+  function renderGalleryViewHeader() {
+    const fMeta = getFacetMeta(showcaseState.domain, showcaseState.activeFacet);
+    const count = showcaseState.galleryItems.length;
+    if (scGalEyebrow) {
+      if (showcaseState.isFavoritesGallery) {
+        scGalEyebrow.textContent = 'SAVED GALLERY · PERSONAL COLLECTION';
+      } else if (showcaseState.isCuratedPage) {
+        scGalEyebrow.textContent = showcaseState.eyebrow || 'CURATED TOPIC STREAM';
+      } else {
+        scGalEyebrow.textContent = showcaseState.domain === 'landscape'
+          ? 'NATURE, MACRO & COSMOS · 4K STREAM'
+          : 'WORLD MUSEUM · ERA & CIVILIZATION STREAM';
+      }
+    }
+    if (scGalTitle) {
+      scGalTitle.textContent = showcaseState.isFavoritesGallery
+        ? ('私藏画匣 · 点心收藏 (' + count + ')')
+        : (showcaseState.title || fMeta.label);
+    }
+    if (scGalSub) {
+      if (showcaseState.isFavoritesGallery) {
+        scGalSub.textContent = count
+          ? ('已收藏 ' + count + ' 件风物 · 点右上角 ♥ 可取消收藏，点击画面进入「图文并排 · Wiki」。')
+          : '画匣还是空的 · 浏览馆藏或自然摄影时点右上角 ♡，即可把喜欢的画作收进这里。';
+      } else {
+        scGalSub.textContent = '已展开 ' + count + ' 件高清原片 · 点右上角 ♡ 收入画匣，点画面即入「图文并排 · Wiki」深读全章。';
+      }
+    }
+    if (scCuratorBanner) {
+      const hasNote = Boolean(showcaseState.curatorNote);
+      scCuratorBanner.hidden = !hasNote;
+      if (hasNote) {
+        if (scCuratorMeta) {
+          scCuratorMeta.textContent = 'CURATED BY ' + String(showcaseState.curatorAuthor || 'FABLE').toUpperCase();
+        }
+        if (scCuratorNote) {
+          scCuratorNote.textContent = showcaseState.curatorNote;
+        }
+      }
+    }
+    if (scGalMoreBtn) {
+      scGalMoreBtn.hidden = Boolean(showcaseState.isFavoritesGallery || showcaseState.isCuratedPage);
+    }
+  }
+
+  function renderGalleryView() {
+    renderFacetPills();
+    if (!showcaseState.galleryItems.length && !showcaseState.isFavoritesGallery) {
+      showcaseState.galleryItems = showcaseState.items.slice();
+    }
+    renderGalleryViewHeader();
+    if (scGalGrid) {
+      if (showcaseState.isFavoritesGallery && !showcaseState.galleryItems.length) {
+        scGalGrid.innerHTML =
+          '<div class="sc-gal-empty">' +
+            '<p>还没有点心收藏的画作。</p>' +
+            '<div class="sc-gal-empty-actions">' +
+              '<button type="button" class="sc-gal-more-btn" data-empty-jump="museum">去逛馆藏年代</button>' +
+              '<button type="button" class="sc-gal-more-btn" data-empty-jump="landscape">去看自然与微距</button>' +
+            '</div>' +
+          '</div>';
+      } else {
+        scGalGrid.innerHTML = buildGalleryCardsHtml(showcaseState.galleryItems, 0);
+        attachGalleryImgFallbacks(scGalGrid);
+      }
+    }
+    updateShowcaseCountersAndSignals();
+  }
+
+  function attachGalleryImgFallbacks(rootEl) {
+    if (!rootEl) return;
+    rootEl.querySelectorAll('.sc-gal-card img').forEach(function (imgEl) {
+      if (imgEl._boundErr) return;
+      imgEl._boundErr = true;
+      let retriedRaw = false;
+      imgEl.addEventListener('error', function () {
+        const raw = imgEl.getAttribute('data-raw-src') || '';
+        if (!retriedRaw && raw && imgEl.src !== raw) {
+          retriedRaw = true;
+          imgEl.src = raw;
+          return;
+        }
+        const card = imgEl.closest('[data-gal-idx]');
+        const idx = card ? parseInt(card.getAttribute('data-gal-idx'), 10) : 0;
+        const itemObj = showcaseState.galleryItems[idx] || showcaseState.items[idx];
+        if (itemObj) {
+          imgEl.src = SP.buildThumbDataURL(itemObj, 420);
+        }
+      });
+    });
+  }
+
+  function buildLocalFacetFallback(domain, facetId, excludeIds) {
+    const all = [].concat(appState.livePool || [], DATA.CURATED_POOL || []).filter(function (it) {
+      if (!it || !it.id || excludeIds.has(it.id)) return false;
+      if (!isVisualItem(it)) return false;
+      if (getDomainForItem(it) !== domain) return false;
+      if (!facetId || facetId === 'all') return true;
+      return it.facet === facetId;
+    }).map(normalizeClientItem);
+    return all.sort(function () { return Math.random() - 0.5; });
+  }
+
+  async function loadFacetGalleryStream(domain, facetId, appendMode) {
+    if (showcaseState.galleryLoading) return;
+    showcaseState.isFavoritesGallery = false;
+    showcaseState.isCuratedPage = false;
+    showcaseState.curatorNote = '';
+    showcaseState.domain = domain || showcaseState.domain || 'museum';
+    showcaseState.activeFacet = facetId || 'all';
+    const fMeta = getFacetMeta(showcaseState.domain, showcaseState.activeFacet);
+    showcaseState.title = fMeta.label;
+    showcaseState.eyebrow = showcaseState.domain === 'landscape' ? 'HORIZON 4K GALLERY' : 'MUSEUM ERA GALLERY';
+
+    if (!appendMode) {
+      showcaseState.galleryPage = 0;
+      if (showcaseState.view !== 'gallery') {
+        showcaseState.view = 'gallery';
+        syncShowcaseSectionVisibility();
+      }
+      if (scGalleryView) scGalleryView.scrollTop = 0;
+    } else {
+      showcaseState.galleryPage += 1;
+    }
+
+    showcaseState.galleryLoading = true;
+    renderFacetPills();
+    if (scGalMoreBtn) {
+      scGalMoreBtn.disabled = true;
+      scGalMoreBtn.textContent = '正在从全球开放馆藏调取高清画卷…';
+    }
+    if (!appendMode && scGalSub) {
+      scGalSub.textContent = '正在调取「' + fMeta.label + '」高清馆藏长卷…';
+    }
+
+    const existingIds = new Set(
+      (appendMode ? showcaseState.galleryItems : []).map(function (x) { return x && x.id; }).filter(Boolean)
+    );
+
+    let fetched = [];
+    if (isHttpServer) {
+      try {
+        const exCsv = Array.from(existingIds).slice(-60).join(',');
+        const url = '/api/explore?domain=' + encodeURIComponent(showcaseState.domain) +
+          '&facet=' + encodeURIComponent(showcaseState.activeFacet) +
+          '&page=' + encodeURIComponent(String(showcaseState.galleryPage)) +
+          '&exclude=' + encodeURIComponent(exCsv);
+        const resp = await fetch(url);
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && Array.isArray(data.items)) {
+            fetched = data.items.map(normalizeClientItem);
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!fetched.length) {
+      fetched = buildLocalFacetFallback(showcaseState.domain, showcaseState.activeFacet, existingIds);
+    }
+
+    const deduped = [];
+    fetched.forEach(function (it) {
+      if (it && it.id && !existingIds.has(it.id)) {
+        existingIds.add(it.id);
+        deduped.push(it);
+      }
+    });
+
+    showcaseState.galleryLoading = false;
+    if (scGalMoreBtn) {
+      scGalMoreBtn.disabled = false;
+      scGalMoreBtn.textContent = '↻ 继续展开更多同代 4K 风物';
+    }
+
+    if (!appendMode) {
+      showcaseState.galleryItems = deduped.length ? deduped : buildLocalFacetFallback(showcaseState.domain, 'all', new Set()).slice(0, 20);
+      showcaseState.items = showcaseState.galleryItems.slice();
+      showcaseState.index = 0;
+      renderGalleryView();
+    } else if (deduped.length) {
+      const startOffset = showcaseState.galleryItems.length;
+      showcaseState.galleryItems = showcaseState.galleryItems.concat(deduped);
+      showcaseState.items = showcaseState.galleryItems.slice();
+      renderGalleryViewHeader();
+      if (scGalGrid) {
+        scGalGrid.insertAdjacentHTML('beforeend', buildGalleryCardsHtml(deduped, startOffset));
+        attachGalleryImgFallbacks(scGalGrid);
+      }
+      updateShowcaseCountersAndSignals();
+    } else if (scGalMoreBtn) {
+      scGalMoreBtn.textContent = '✓ 当前分面精选已全部展开，可点上方换其他文明或秘境';
+    }
+    renderFacetPills();
+  }
+
+  // ==================== 模式 2：◫ 图文并排 · 左 4K 缩放展台 + 右维基百科全章与收藏库 ====================
+  function applySplitTransform() {
+    if (!scSplitImg) return;
+    scSplitImg.style.transform =
+      'translate3d(' + showcaseState.splitPanX.toFixed(1) + 'px, ' + showcaseState.splitPanY.toFixed(1) + 'px, 0) scale(' + showcaseState.splitZoom.toFixed(3) + ')';
+    if (scSplitCanvas) {
+      scSplitCanvas.classList.toggle('is-zoomed', showcaseState.splitZoom > 1.04);
+    }
+  }
+
+  function resetSplitZoom() {
+    showcaseState.splitZoom = 1.0;
+    showcaseState.splitPanX = 0;
+    showcaseState.splitPanY = 0;
+    showcaseState.splitDragging = false;
+    if (scSplitCanvas) scSplitCanvas.classList.remove('dragging');
+    applySplitTransform();
+  }
+
+  function syncSplitFitUI() {
+    if (scSplitCanvas) {
+      scSplitCanvas.classList.toggle('is-cover', Boolean(showcaseState.splitCover));
+    }
+    if (scSplitFitBtn) {
+      scSplitFitBtn.textContent = showcaseState.splitCover ? '⛶ 完整画幅' : '⛶ 铺满展台';
+    }
+  }
+
+  function renderSplitView() {
+    const it = showcaseState.items[showcaseState.index];
+    if (!it) return;
+
+    showcaseState.domain = getDomainForItem(it);
+    resetSplitZoom();
+    syncSplitFitUI();
+    renderFacetPills();
+
+    const hasVisual = isVisualItem(it);
+    if (scSplitImg) {
+      scSplitImg.hidden = !hasVisual;
+      if (hasVisual) {
+        scSplitImg.alt = it.title || '';
+        attachProgressiveStageImage(scSplitImg, it, null);
+      }
+    }
+    if (scSplitQuoteCard) {
+      scSplitQuoteCard.hidden = hasVisual;
+      if (!hasVisual) {
+        if (scSqKicker) scSqKicker.textContent = (it.channel || 'LITERARY FOLIO').toUpperCase();
+        if (scSqQuote) scSqQuote.textContent = '“' + (it.quote || it.story || it.title || '') + '”';
+        if (scSqSub) scSqSub.textContent = it.subtitle || it.title || '';
+      }
+    }
+
+    if (scSplitMapLink) {
+      if (it.mapUrl) {
+        scSplitMapLink.href = it.mapUrl;
+        scSplitMapLink.hidden = false;
+      } else {
+        scSplitMapLink.hidden = true;
+      }
+    }
+    if (scSplitTitle) scSplitTitle.textContent = it.title || '';
+    if (scSplitEn) {
+      scSplitEn.textContent = it.enTitle || '';
+      scSplitEn.hidden = !it.enTitle;
+    }
+    if (scSplitSub) scSplitSub.textContent = it.subtitle || '';
+
+    renderFilmstripInto(scSplitStrip);
+    renderDossierPaneForCurrentItem();
+  }
+
+  // ==================== 模式 3：⛶ 100vw × 100dvh 真全屏 4K 沉浸画幅 ====================
+  function applyStageTransform() {
+    if (!scStageImg) return;
+    scStageImg.style.transform =
+      'translate3d(' + showcaseState.panX.toFixed(1) + 'px, ' + showcaseState.panY.toFixed(1) + 'px, 0) scale(' + showcaseState.zoom.toFixed(3) + ')';
+    if (scStageView) {
+      scStageView.classList.toggle('is-zoomed', showcaseState.zoom > 1.04);
+    }
+  }
+
+  function resetStageZoom() {
+    showcaseState.zoom = 1.0;
+    showcaseState.panX = 0;
+    showcaseState.panY = 0;
+    showcaseState.dragging = false;
+    if (scStageCanvas) scStageCanvas.classList.remove('dragging');
+    applyStageTransform();
+  }
+
+  function syncStageFitClass(item) {
+    if (!scStageView) return;
+    const autoCover = (getDomainForItem(item) === 'landscape');
+    const useCover = (showcaseState.coverOverride !== null) ? showcaseState.coverOverride : autoCover;
+    scStageView.classList.toggle('is-cover', Boolean(useCover));
+    if (scFitBtn) {
+      scFitBtn.textContent = useCover ? '⛶ 完整画幅' : '⛶ 铺满全屏';
+    }
+  }
+
+  function renderStageView() {
+    const it = showcaseState.items[showcaseState.index];
+    if (!it) return;
+
+    showcaseState.domain = getDomainForItem(it);
+    resetStageZoom();
+    syncStageFitClass(it);
+    renderFacetPills();
+
+    if (scStageImg) {
+      scStageImg.alt = it.title || '';
+      attachProgressiveStageImage(scStageImg, it, function (resolvedUrl) {
+        if (scStageBackdrop) {
+          scStageBackdrop.style.backgroundImage = 'url("' + resolvedUrl.replace(/"/g, '%22') + '")';
+        }
+      });
+    }
+
+    if (scCapTag) {
+      scCapTag.textContent = it.civilization || (showcaseState.domain === 'landscape' ? 'EARTH & COSMOS 4K' : 'OPEN ACCESS MUSEUM 4K');
+    }
+    if (scMapLink) {
+      if (it.mapUrl) {
+        scMapLink.href = it.mapUrl;
+        scMapLink.hidden = false;
+      } else {
+        scMapLink.hidden = true;
+      }
+    }
+    if (scCapTitle) scCapTitle.textContent = it.title || '';
+    if (scCapSub) scCapSub.textContent = (it.enTitle ? (it.enTitle + ' · ') : '') + (it.subtitle || '');
+    const storyTxt = it.story || it.quote || '';
+    if (scCapStory) scCapStory.textContent = storyTxt;
+    const pills = [].concat(it.meta || [], (it.tags || []).slice(0, 3)).filter(Boolean).slice(0, 5);
+    if (scCapMeta) {
+      scCapMeta.innerHTML = pills.map(function (m) {
+        return '<span class="sc-meta-pill">' + escHtml(m) + '</span>';
+      }).join('');
+    }
+    if (scCapDetails) {
+      scCapDetails.hidden = !storyTxt && !pills.length;
+    }
+    if (scCaptionCard) {
+      scCaptionCard.classList.toggle('is-collapsed', showcaseState.captionHidden);
+    }
+
+    renderFilmstripInto(scStageStrip);
+    updateShowcaseCountersAndSignals();
+  }
+
+  async function triggerFacetRandomJump(domain, facetId) {
+    const dom = domain || showcaseState.domain || 'museum';
+    const fac = facetId || showcaseState.activeFacet || 'all';
+    if (showcaseState.view === 'gallery') {
+      loadFacetGalleryStream(dom, fac, false);
+      return;
+    }
+    if (showcaseState.isJumping) return;
+    showcaseState.domain = dom;
+    showcaseState.activeFacet = fac;
+    renderFacetPills();
+
+    const qKey = dom + ':' + fac;
+    if (!Array.isArray(showcaseState.facetQueues[qKey])) {
+      showcaseState.facetQueues[qKey] = [];
+    }
+
+    const inShowcaseIds = new Set(showcaseState.items.map(function (x) { return x && x.id; }).filter(Boolean));
+    const queue = showcaseState.facetQueues[qKey];
+    while (queue.length && inShowcaseIds.has(queue[0].id)) {
+      queue.shift();
+    }
+
+    if (!queue.length) {
+      showcaseState.isJumping = true;
+      if (scRandomJumpBtn) {
+        scRandomJumpBtn.classList.add('is-loading');
+        scRandomJumpBtn.textContent = '漫游调取中…';
+      }
+
+      let fetched = [];
+      if (isHttpServer) {
+        try {
+          const exCsv = Array.from(inShowcaseIds).slice(-35).join(',');
+          const url = '/api/explore?domain=' + encodeURIComponent(dom) +
+            '&facet=' + encodeURIComponent(fac) +
+            '&exclude=' + encodeURIComponent(exCsv);
+          const resp = await fetch(url);
+          if (resp.ok) {
+            const data = await resp.json();
+            if (data && Array.isArray(data.items)) fetched = data.items.map(normalizeClientItem);
+          }
+        } catch (_) {}
+      }
+      if (!fetched.length) {
+        fetched = buildLocalFacetFallback(dom, fac, inShowcaseIds);
+      }
+      fetched.forEach(function (it) {
+        if (it && it.id && !inShowcaseIds.has(it.id)) queue.push(it);
+      });
+
+      showcaseState.isJumping = false;
+      if (scRandomJumpBtn) scRandomJumpBtn.classList.remove('is-loading');
+      renderFacetPills();
+    }
+
+    const nextItem = queue.shift() || buildLocalFacetFallback(dom, 'all', new Set())[0];
+    if (!nextItem) return;
+
+    const existingIdx = showcaseState.items.findIndex(function (x) { return x && x.id === nextItem.id; });
+    if (existingIdx >= 0) {
+      showcaseState.index = existingIdx;
+    } else {
+      showcaseState.items.push(nextItem);
+      showcaseState.index = showcaseState.items.length - 1;
+    }
+    showcaseState.lastRenderedWikiItemId = '';
+    switchShowcaseView(showcaseState.view === 'stage' ? 'stage' : 'split');
+  }
+
+  // ==================== 右栏：维基百科完整多章节深读 + 顺藤摸瓜轨迹 + LWA 收藏库 ====================
+  async function fetchWikiDirectFallback(title) {
+    const queryHost = async function (lang) {
+      const api = 'https://' + lang + '.wikipedia.org/w/api.php?origin=*&action=query&format=json&redirects=1' +
+        (lang === 'zh' ? '&variant=zh-cn' : '') +
+        '&prop=extracts|pageimages|links|info&inprop=url&explaintext=1&exsectionformat=wiki&pithumbsize=1280&plnamespace=0&pllimit=24&titles=' +
+        encodeURIComponent(title);
+      const r = await fetch(api);
+      const j = await r.json();
+      const pages = j && j.query && j.query.pages ? Object.values(j.query.pages) : [];
+      const p = pages[0];
+      if (!p || p.missing != null || !p.extract) return null;
+      const lines = String(p.extract).split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+      const summary = [];
+      const sections = [];
+      let cur = null;
+      lines.forEach(function (ln) {
+        const m = ln.match(/^(={2,4})\s*(.+?)\s*\1$/);
+        if (m) {
+          cur = { heading: m[2], level: m[1].length, paragraphs: [] };
+          sections.push(cur);
+        } else if (!cur) {
+          summary.push(ln);
+        } else {
+          cur.paragraphs.push(ln);
+        }
+      });
+      return {
+        ok: true,
+        lang: lang,
+        title: p.title,
+        pageUrl: p.fullurl || ('https://' + lang + '.wikipedia.org/wiki/' + encodeURIComponent(p.title)),
+        thumbnail: (p.thumbnail && p.thumbnail.source) || '',
+        summary: summary,
+        sections: sections.filter(function (s) { return s.paragraphs.length > 0; }),
+        relatedTopics: ((p.links || []).map(function (l) { return l.title; })).slice(0, 12)
+      };
+    };
+    return (await queryHost('zh')) || (await queryHost('en')) || { ok: false, error: '离线未命中词条' };
+  }
+
+  function renderTrailNav() {
+    if (!dosTrail) return;
+    if (showcaseState.wikiTrail.length <= 1) {
+      dosTrail.hidden = true;
+      dosTrail.innerHTML = '';
+      return;
+    }
+    dosTrail.hidden = false;
+    const parts = ['<span class="dos-trail-label">阅读轨迹：</span>'];
+    showcaseState.wikiTrail.forEach(function (tName, idx) {
+      if (idx > 0) parts.push('<span class="dos-trail-sep">➔</span>');
+      const isCur = tName === showcaseState.activeWikiTopic;
+      parts.push(
+        '<button type="button" class="dos-trail-step' + (isCur ? ' current' : '') + '" data-trail-idx="' + idx + '">' +
+          escHtml(tName) +
+        '</button>'
+      );
+    });
+    dosTrail.innerHTML = parts.join('');
+  }
+
+  function renderRelatedChips(item, wikiRelated) {
+    if (!dosRelatedChips) return;
+    const merged = [];
+    const seen = new Set();
+    const baseWiki = inferDefaultWikiTitle(item);
+    [].concat([baseWiki], (item && item.relatedSeeds) || [], wikiRelated || []).forEach(function (topic) {
+      const t = String(topic || '').trim();
+      if (!t || seen.has(t)) return;
+      seen.add(t);
+      merged.push(t);
+    });
+    showcaseState.currentRelatedPool = merged;
+
+    dosRelatedChips.innerHTML = merged.slice(0, 16).map(function (topic) {
+      const isAct = topic === showcaseState.activeWikiTopic;
+      return (
+        '<button type="button" class="dos-topic-chip' + (isAct ? ' active' : '') + '" data-wiki-topic="' + escHtml(topic) + '">' +
+          escHtml(topic) +
+        '</button>'
+      );
+    }).join('');
+  }
+
+  async function loadLwaRelatedNotes(item, topicTitle) {
+    if (!dosLwaList) return;
+    const askUrl = appState.lwaAskUrl || DATA.OBSIDIAN_ASK_URL || '#';
+    const catUrl = appState.lwaCatalogUrl || DATA.OBSIDIAN_CATALOG_URL || '#';
+
+    if (!isHttpServer) {
+      dosLwaList.innerHTML =
+        '<div class="dos-lwa-empty">当前为静态离线页，可直接 <a class="dos-lwa-open" href="' + escHtml(catUrl) + '">在 Obsidian 打开收藏库 ↗</a></div>';
+      return;
+    }
+
+    const qParts = [topicTitle, item && item.title, item && item.wikiTitle].concat((item && item.tags) || []).filter(Boolean);
+    const qStr = qParts.slice(0, 5).join(' ');
+
+    try {
+      const resp = await fetch('/api/lwa-related?q=' + encodeURIComponent(qStr));
+      const data = resp.ok ? await resp.json() : null;
+      const list = (data && Array.isArray(data.items)) ? data.items : [];
+
+      if (!list.length) {
+        dosLwaList.innerHTML =
+          '<div class="dos-lwa-empty">' +
+            '收藏库暂未检出「' + escHtml(topicTitle) + '」同名笔记。' +
+            '<div style="margin-top:6px"><a class="dos-lwa-open" href="' + escHtml(askUrl) + '">去 Obsidian 问收藏检索 ↗</a> · <a class="dos-lwa-open" href="' + escHtml(catUrl) + '">浏览收藏目录 ↗</a></div>' +
+          '</div>';
+        return;
+      }
+
+      dosLwaList.innerHTML = list.map(function (row) {
+        const metaStr = [].concat(row.cats || [], row.author ? ['@' + row.author] : []).slice(0, 2).join(' · ');
+        return (
+          '<div class="dos-lwa-item">' +
+            '<div class="dos-lwa-item-title">' + (row.starred ? '⭐ ' : '') + escHtml(row.title) + '</div>' +
+            (row.summary ? '<div class="dos-lwa-item-sum">' + escHtml(row.summary) + '</div>' : '') +
+            '<div class="dos-lwa-item-foot">' +
+              '<span>' + escHtml(metaStr || 'LWA 收藏笔记') + '</span>' +
+              '<span>' +
+                '<a class="dos-lwa-open" href="' + escHtml(row.obsidianUrl || catUrl) + '">在 Obsidian 打开 ↗</a>' +
+                (row.sourceUrl ? ' · <a class="dos-lwa-open" href="' + escHtml(row.sourceUrl) + '" target="_blank" rel="noopener">原帖 ↗</a>' : '') +
+              '</span>' +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
+    } catch (_) {
+      dosLwaList.innerHTML =
+        '<div class="dos-lwa-empty"><a class="dos-lwa-open" href="' + escHtml(catUrl) + '">打开 Obsidian 收藏库 ↗</a></div>';
+    }
+  }
+
+  async function loadWikiTopicIntoDossier(topicTitle, appendToTrail) {
+    const cleanTopic = String(topicTitle || '').trim();
+    if (!cleanTopic || !dosWikiArticle) return;
+
+    showcaseState.activeWikiTopic = cleanTopic;
+    if (appendToTrail) {
+      const existingPos = showcaseState.wikiTrail.indexOf(cleanTopic);
+      if (existingPos >= 0) {
+        showcaseState.wikiTrail = showcaseState.wikiTrail.slice(0, existingPos + 1);
+      } else {
+        showcaseState.wikiTrail.push(cleanTopic);
+      }
+    } else if (!showcaseState.wikiTrail.length) {
+      showcaseState.wikiTrail = [cleanTopic];
+    }
+    renderTrailNav();
+
+    const activeItem = showcaseState.items[showcaseState.index];
+    renderRelatedChips(activeItem, []);
+    loadLwaRelatedNotes(activeItem, cleanTopic);
+
+    const reqId = ++showcaseState.wikiReqSeq;
+    dosWikiArticle.innerHTML = '<div class="dos-loading">正在展开「' + escHtml(cleanTopic) + '」完整维基百科章节与知识脉络…</div>';
+
+    let data = wikiClientCache[cleanTopic] || null;
+    if (!data) {
+      try {
+        if (isHttpServer) {
+          const resp = await fetch('/api/wiki?title=' + encodeURIComponent(cleanTopic) + '&lang=zh');
+          if (resp.ok) data = await resp.json();
+        } else {
+          data = await fetchWikiDirectFallback(cleanTopic);
+        }
+      } catch (_) {
+        data = { ok: false, error: '网络波动，暂未拉取到词条正文' };
+      }
+      if (data && data.ok) {
+        wikiClientCache[cleanTopic] = data;
+      }
+    }
+
+    if (reqId !== showcaseState.wikiReqSeq) return;
+
+    if (!data || !data.ok) {
+      const searchWikiUrl = 'https://zh.wikipedia.org/w/index.php?search=' + encodeURIComponent(cleanTopic);
+      dosWikiArticle.innerHTML =
+        '<div class="dos-wiki-header">' +
+          '<div><span class="dos-wiki-badge">WIKIPEDIA CONTEXT</span><h2 class="dos-wiki-h2">' + escHtml(cleanTopic) + '</h2></div>' +
+          '<a class="dos-wiki-ext" href="' + escHtml(searchWikiUrl) + '" target="_blank" rel="noopener">去维基百科搜索 ↗</a>' +
+        '</div>' +
+        '<p class="dos-wiki-p">暂未直接匹配到同名长词条，可点下方「顺藤摸瓜」关联词条继续深读，或前往维基百科搜索。</p>';
+      return;
+    }
+
+    renderRelatedChips(activeItem, data.relatedTopics || []);
+
+    const showRightThumb = Boolean(data.thumbnail && (showcaseState.wikiTrail.length > 1 || !isVisualItem(activeItem)));
+    const thumbResolved = showRightThumb ? resolveImgUrl(data.thumbnail) : '';
+    const sumHtml = (data.summary || []).map(function (p) {
+      return '<p class="dos-wiki-p">' + escHtml(p) + '</p>';
+    }).join('');
+
+    const secs = (data.sections || []).slice(0, 12);
+    const tocHtml = secs.length > 1
+      ? '<nav class="dos-wiki-toc" aria-label="词条章节目录">' +
+          secs.map(function (s, sIdx) {
+            return '<a class="dos-toc-pill" href="#dos-wiki-sec-' + sIdx + '" data-sec-jump="' + sIdx + '">' + escHtml(s.heading) + '</a>';
+          }).join('') +
+        '</nav>'
+      : '';
+
+    const secsHtml = secs.map(function (sec, sIdx) {
+      const deferCls = sIdx >= 2 ? ' dos-sec-deferred' : '';
+      const tagH = sec.level >= 3 ? 'h4' : 'h3';
+      const paras = (sec.paragraphs || []).map(function (p) {
+        return '<p class="dos-wiki-p">' + escHtml(p) + '</p>';
+      }).join('');
+      return (
+        '<section class="dos-wiki-sec' + deferCls + '" id="dos-wiki-sec-' + sIdx + '">' +
+          '<' + tagH + '>' + escHtml(sec.heading) + '</' + tagH + '>' +
+          paras +
+        '</section>'
+      );
+    }).join('');
+
+    dosWikiArticle.innerHTML =
+      '<div class="dos-wiki-header">' +
+        '<div>' +
+          '<span class="dos-wiki-badge">WIKIPEDIA FULL DOSSIER · ' + escHtml(String(data.lang || 'zh').toUpperCase()) + '</span>' +
+          '<h2 class="dos-wiki-h2">' + escHtml(data.title || cleanTopic) + '</h2>' +
+        '</div>' +
+        '<a class="dos-wiki-ext" href="' + escHtml(data.pageUrl || '#') + '" target="_blank" rel="noopener">维基原页 ↗</a>' +
+      '</div>' +
+      '<div class="dos-wiki-hero' + (thumbResolved ? '' : ' no-thumb') + '">' +
+        '<div>' + sumHtml + '</div>' +
+        (thumbResolved ? '<img class="dos-wiki-thumb" src="' + escHtml(thumbResolved) + '" alt="' + escHtml(data.title || '') + '" loading="lazy" decoding="async">' : '') +
+      '</div>' +
+      tocHtml +
+      secsHtml;
+  }
+
+  function renderDossierWindowList() {
+    if (!dosWindowList) return;
+    dosWindowList.innerHTML = showcaseState.items.slice(0, 32).map(function (it, idx) {
+      const isAct = idx === showcaseState.index;
+      return (
+        '<button type="button" class="dos-win-btn' + (isAct ? ' active' : '') + '" data-win-idx="' + idx + '">' +
+          pad2(idx + 1) + ' · ' + escHtml(it.title || '') +
+        '</button>'
+      );
+    }).join('');
+  }
+
+  function renderDossierPaneForCurrentItem() {
+    const it = showcaseState.items[showcaseState.index];
+    if (!it) return;
+
+    renderDossierWindowList();
+    updateShowcaseCountersAndSignals();
+
+    if (showcaseState.lastRenderedWikiItemId === it.id && dosWikiArticle && dosWikiArticle.children.length > 0) {
+      return;
+    }
+    showcaseState.lastRenderedWikiItemId = it.id;
+
+    if (dosLead) {
+      const seeds = [].concat([inferDefaultWikiTitle(it)], it.relatedSeeds || []).filter(Boolean);
+      const uniqSeeds = Array.from(new Set(seeds)).slice(0, 6);
+      const seedBtns = uniqSeeds.map(function (sd) {
+        return '<button type="button" class="dos-topic-chip" data-wiki-topic="' + escHtml(sd) + '">' + escHtml(sd) + '</button>';
+      }).join('');
+
+      dosLead.innerHTML =
+        '<div class="dos-lead-kicker">' + escHtml((it.civilization || it.channel || 'CURATED DOSSIER').toUpperCase()) + '</div>' +
+        '<h1 class="dos-lead-title">' + escHtml(it.title || '') + '</h1>' +
+        ((it.enTitle || it.subtitle) ? '<div class="dos-lead-sub">' + escHtml([it.enTitle, it.subtitle].filter(Boolean).join(' · ')) + '</div>' : '') +
+        (it.quote ? '<blockquote class="dos-lead-quote">“' + escHtml(it.quote) + '”</blockquote>' : '') +
+        (it.story ? '<p class="dos-lead-story">' + escHtml(it.story) + '</p>' : '') +
+        (seedBtns ? '<div class="dos-lead-seeds"><span class="dos-seed-label">延伸词条秒切：</span>' + seedBtns + '</div>' : '');
+    }
+
+    const startTopic = inferDefaultWikiTitle(it);
+    showcaseState.wikiTrail = [startTopic];
+    if (scSplitRight) scSplitRight.scrollTop = 0;
+    loadWikiTopicIntoDossier(startTopic, false);
+  }
+
+  function syncShowcaseSectionVisibility() {
+    const v = showcaseState.view;
+    if (scGalleryView) scGalleryView.hidden = (v !== 'gallery');
+    if (scSplitView) scSplitView.hidden = (v !== 'split');
+    if (scStageView) scStageView.hidden = (v !== 'stage');
+    syncModeTabsUI();
+  }
+
+  function switchShowcaseView(targetView) {
+    const it = showcaseState.items[showcaseState.index];
+    let nextView = targetView || 'split';
+    if (nextView === 'stage' && it && !isVisualItem(it)) {
+      nextView = 'split';
+    }
+    showcaseState.view = nextView;
+    syncShowcaseSectionVisibility();
+
+    if (nextView === 'gallery') {
+      renderGalleryView();
+    } else if (nextView === 'stage') {
+      renderStageView();
+    } else {
+      renderSplitView();
+    }
+  }
+
+  function stepShowcaseItem(delta) {
+    const len = showcaseState.items.length;
+    if (!len) return;
+    showcaseState.index = (showcaseState.index + delta + len) % len;
+    showcaseState.lastRenderedWikiItemId = '';
+    const nextItem = showcaseState.items[showcaseState.index];
+    if (showcaseState.view === 'gallery') {
+      switchShowcaseView('split');
+    } else if (showcaseState.view === 'stage' && !isVisualItem(nextItem)) {
+      switchShowcaseView('split');
+    } else {
+      switchShowcaseView(showcaseState.view);
+    }
+  }
+
+  function selectShowcaseIndex(idx, targetMode) {
+    if (!showcaseState.items.length) return;
+    const clamped = Math.max(0, Math.min(showcaseState.items.length - 1, idx));
+    if (clamped !== showcaseState.index) {
+      showcaseState.index = clamped;
+      showcaseState.lastRenderedWikiItemId = '';
+    }
+    switchShowcaseView(targetMode || (showcaseState.view === 'gallery' ? 'split' : showcaseState.view));
+  }
+
+  function recordPreferenceSignalForItem(it, action) {
+    if (!it || !it.id) return;
+    showcaseState.sigRecorded[it.id] = action;
+    updateShowcaseCountersAndSignals();
+
+    const payload = {
+      action: action,
+      id: it.id,
+      itemId: it.id,
+      channel: it.channel || '',
+      title: it.title || '',
+      tags: it.tags || []
+    };
+    const localSigs = loadLocalJson('ww_signals_v2', []);
+    localSigs.push(Object.assign({ ts: new Date().toISOString() }, payload));
+    if (localSigs.length > 200) localSigs.splice(0, localSigs.length - 200);
+    saveLocalJson('ww_signals_v2', localSigs);
+
+    if (isHttpServer) {
+      fetch('/api/signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        priority: 'low'
+      }).catch(function () {});
+    }
+  }
+
+  function recordPreferenceSignal(action) {
+    const it = showcaseState.items[showcaseState.index];
+    if (it) recordPreferenceSignalForItem(it, action);
+  }
+
+  // ==================== 三态展厅交互事件绑定 ====================
+  if (scPrevBtn) scPrevBtn.addEventListener('click', function () { stepShowcaseItem(-1); });
+  if (scNextBtn) scNextBtn.addEventListener('click', function () { stepShowcaseItem(1); });
+
+  [
+    [scTabGallery, 'gallery'],
+    [scTabSplit, 'split'],
+    [scTabStage, 'stage']
+  ].forEach(function (pair) {
+    if (!pair[0]) return;
+    pair[0].addEventListener('click', function () {
+      if (pair[1] === 'gallery' && !showcaseState.galleryItems.length && !showcaseState.isFavoritesGallery) {
+        showcaseState.galleryItems = showcaseState.items.slice();
+      }
+      switchShowcaseView(pair[1]);
+    });
+  });
+
+  if (scDomMuseumBtn) {
+    scDomMuseumBtn.addEventListener('click', function () {
+      loadFacetGalleryStream('museum', 'china-tang-song', false);
+    });
+  }
+  if (scDomLandscapeBtn) {
+    scDomLandscapeBtn.addEventListener('click', function () {
+      loadFacetGalleryStream('landscape', 'natgeo-wildlife', false);
+    });
+  }
+
+  if (scFacetPills) {
+    scFacetPills.addEventListener('click', function (e) {
+      const pill = e.target.closest('[data-facet-id]');
+      if (!pill) return;
+      const fid = pill.getAttribute('data-facet-id') || 'all';
+      loadFacetGalleryStream(showcaseState.domain, fid, false);
+    });
+  }
+
+  if (scRandomJumpBtn) {
+    scRandomJumpBtn.addEventListener('click', function () {
+      triggerFacetRandomJump(showcaseState.domain, showcaseState.activeFacet);
+    });
+  }
+
+  if (scGalMoreBtn) {
+    scGalMoreBtn.addEventListener('click', function () {
+      loadFacetGalleryStream(showcaseState.domain, showcaseState.activeFacet, true);
+    });
+  }
+
+  if (scGalGrid) {
+    scGalGrid.addEventListener('click', function (e) {
+      const emptyJump = e.target.closest('[data-empty-jump]');
+      if (emptyJump) {
+        e.stopPropagation();
+        const dom = emptyJump.getAttribute('data-empty-jump') === 'landscape' ? 'landscape' : 'museum';
+        loadFacetGalleryStream(dom, dom === 'landscape' ? 'natgeo-wildlife' : 'china-tang-song', false);
+        return;
+      }
+      const favBtn = e.target.closest('[data-fav-idx]');
+      if (favBtn) {
+        e.stopPropagation();
+        const fIdx = parseInt(favBtn.getAttribute('data-fav-idx'), 10) || 0;
+        const targetIt = showcaseState.galleryItems[fIdx] || showcaseState.items[fIdx];
+        if (targetIt) toggleFavoriteItem(targetIt);
+        return;
+      }
+      const stageQuick = e.target.closest('[data-gal-stage]');
+      if (stageQuick) {
+        e.stopPropagation();
+        const sIdx = parseInt(stageQuick.getAttribute('data-gal-stage'), 10) || 0;
+        showcaseState.items = showcaseState.galleryItems.slice();
+        selectShowcaseIndex(sIdx, 'stage');
+        return;
+      }
+      const card = e.target.closest('[data-gal-idx]');
+      if (!card) return;
+      const cIdx = parseInt(card.getAttribute('data-gal-idx'), 10) || 0;
+      showcaseState.items = showcaseState.galleryItems.slice();
+      selectShowcaseIndex(cIdx, 'split');
+    });
+  }
+
+  [scSplitStrip, scStageStrip].forEach(function (stripEl) {
+    if (!stripEl) return;
+    stripEl.addEventListener('click', function (e) {
+      const btn = e.target.closest('[data-film-idx]');
+      if (!btn) return;
+      const fIdx = parseInt(btn.getAttribute('data-film-idx'), 10) || 0;
+      selectShowcaseIndex(fIdx, showcaseState.view);
+    });
+  });
+
+  if (scSplitFitBtn) {
+    scSplitFitBtn.addEventListener('click', function () {
+      showcaseState.splitCover = !showcaseState.splitCover;
+      syncSplitFitUI();
+    });
+  }
+  if (scSplitResetZoomBtn) {
+    scSplitResetZoomBtn.addEventListener('click', resetSplitZoom);
+  }
+  if (scSplitToFullBtn) {
+    scSplitToFullBtn.addEventListener('click', function () {
+      switchShowcaseView('stage');
+    });
+  }
+  if (scOpenDossierBtn) {
+    scOpenDossierBtn.addEventListener('click', function () {
+      switchShowcaseView('split');
+    });
+  }
+
+  if (scFitBtn) {
+    scFitBtn.addEventListener('click', function () {
+      const it = showcaseState.items[showcaseState.index];
+      const curCover = scStageView && scStageView.classList.contains('is-cover');
+      showcaseState.coverOverride = !curCover;
+      syncStageFitClass(it);
+    });
+  }
+  if (scCaptionToggle) {
+    scCaptionToggle.addEventListener('click', function () {
+      showcaseState.captionHidden = !showcaseState.captionHidden;
+      if (scCaptionCard) scCaptionCard.classList.toggle('is-collapsed', showcaseState.captionHidden);
+    });
+  }
+
+  if (scFavBtn) {
+    scFavBtn.addEventListener('click', function () {
+      const it = showcaseState.items[showcaseState.index];
+      if (it) toggleFavoriteItem(it);
+    });
+  }
+  if (scStageFavBtn) {
+    scStageFavBtn.addEventListener('click', function () {
+      const it = showcaseState.items[showcaseState.index];
+      if (it) toggleFavoriteItem(it);
+    });
+  }
+  if (scOpenFavBtn) {
+    scOpenFavBtn.addEventListener('click', function () {
+      openFavoritesGallery(0, 'gallery');
+    });
+  }
+  if (favGalleryBtn) {
+    favGalleryBtn.addEventListener('click', function () {
+      openFavoritesGallery(0, 'gallery');
+    });
+  }
+  if (drawerOpenFavAll) {
+    drawerOpenFavAll.addEventListener('click', function () {
+      openFavoritesGallery(0, 'gallery');
+    });
+  }
+  if (tunerOpenFavGallery) {
+    tunerOpenFavGallery.addEventListener('click', function () {
+      openFavoritesGallery(0, 'gallery');
+    });
+  }
+  if (scSigMoreBtn) scSigMoreBtn.addEventListener('click', function () { recordPreferenceSignal('more'); });
+  if (scSigLessBtn) scSigLessBtn.addEventListener('click', function () { recordPreferenceSignal('less'); });
+  if (scCloseBtn) scCloseBtn.addEventListener('click', function () { closeShowcaseModal(); });
+
+  // ==================== IME 安全维基百科实时搜索（顶栏 + 图文并排右栏双入口） ====================
+  async function fetchWikiSearchSuggestions(queryText) {
+    const q = String(queryText || '').trim();
+    if (!q) return [];
+    if (isHttpServer) {
+      try {
+        const resp = await fetch('/api/wiki-search?q=' + encodeURIComponent(q));
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && Array.isArray(data.items)) return data.items;
+        }
+      } catch (_) {}
+    }
+    try {
+      const isAscii = /^[\x00-\x7F]+$/.test(q);
+      const lang = isAscii ? 'en' : 'zh';
+      const url = 'https://' + lang + '.wikipedia.org/w/api.php?origin=*&action=query&format=json' +
+        (lang === 'zh' ? '&variant=zh-cn' : '') +
+        '&generator=prefixsearch&gpssearch=' + encodeURIComponent(q) +
+        '&gpslimit=7&prop=pageimages|description&pithumbsize=160';
+      const r = await fetch(url);
+      const j = await r.json();
+      const pages = j && j.query && j.query.pages ? Object.values(j.query.pages) : [];
+      pages.sort(function (a, b) { return (a.index || 99) - (b.index || 99); });
+      return pages.map(function (p) {
+        return {
+          title: p.title,
+          lang: lang,
+          description: p.description || '',
+          thumbnail: (p.thumbnail && p.thumbnail.source) || ''
+        };
+      });
+    } catch (_) {
+      return [];
+    }
+  }
+
+  async function openWikiSearchTopic(rawTitle, preferredLang, fromTopBar) {
+    const cleanTitle = String(rawTitle || '').trim();
+    if (!cleanTitle) return;
+    const lang = preferredLang || (/^[\x00-\x7F]+$/.test(cleanTitle) ? 'en' : 'zh');
+
+    let dossier = wikiClientCache[cleanTitle] || null;
+    if (!dossier) {
+      try {
+        if (isHttpServer) {
+          const resp = await fetch('/api/wiki?title=' + encodeURIComponent(cleanTitle) + '&lang=' + encodeURIComponent(lang));
+          if (resp.ok) dossier = await resp.json();
+        } else {
+          dossier = await fetchWikiDirectFallback(cleanTitle);
+        }
+        if (dossier && dossier.ok) {
+          wikiClientCache[cleanTitle] = dossier;
+          if (dossier.title) wikiClientCache[dossier.title] = dossier;
+        }
+      } catch (_) {}
+    }
+
+    const resolvedTitle = (dossier && dossier.ok && dossier.title) ? dossier.title : cleanTitle;
+    const hiImg = (dossier && (dossier.originalImage || dossier.thumbnail)) || '';
+
+    if (!isModalOpen(showcaseDialog) || fromTopBar || showcaseState.view === 'gallery') {
+      const wikiCardItem = normalizeClientItem({
+        id: 'wiki-topic-' + encodeURIComponent(resolvedTitle),
+        channel: 'books',
+        kind: hiImg ? 'image' : 'quote',
+        civilization: 'WIKIPEDIA DOSSIER',
+        title: resolvedTitle,
+        enTitle: (dossier && dossier.lang === 'en') ? '' : cleanTitle,
+        shortTitle: resolvedTitle.slice(0, 14),
+        subtitle: '维基百科专题词条 · 图文并排深读',
+        thumbUrl: (dossier && dossier.thumbnail) || hiImg,
+        previewUrl: hiImg || (dossier && dossier.thumbnail) || '',
+        fullUrl: hiImg || (dossier && dossier.thumbnail) || '',
+        sourceUrl: (dossier && dossier.pageUrl) || ('https://zh.wikipedia.org/wiki/' + encodeURIComponent(resolvedTitle)),
+        wikiTitle: resolvedTitle,
+        relatedSeeds: (dossier && dossier.relatedTopics ? dossier.relatedTopics.slice(0, 6) : []),
+        story: (dossier && Array.isArray(dossier.summary) && dossier.summary[0]) ? dossier.summary[0].slice(0, 220) : '',
+        quote: (!hiImg && dossier && Array.isArray(dossier.summary) && dossier.summary[0]) ? dossier.summary[0].slice(0, 180) : '',
+        meta: ['Wikipedia Full Dossier'],
+        tags: [resolvedTitle]
+      });
+
+      const list = collectAllWindowItems();
+      const existingIdx = list.findIndex(function (x) { return x && x.id === wikiCardItem.id; });
+      if (existingIdx >= 0) {
+        list[existingIdx] = wikiCardItem;
+      } else {
+        list.unshift(wikiCardItem);
+      }
+
+      openShowcase({
+        items: list,
+        startIndex: existingIdx >= 0 ? existingIdx : 0,
+        view: 'split',
+        eyebrow: 'WIKIPEDIA SEARCH · SPLIT VIEW',
+        title: resolvedTitle
+      });
+      return;
+    }
+
+    if (showcaseState.view !== 'split') {
+      switchShowcaseView('split');
+    }
+    const curItem = showcaseState.items[showcaseState.index];
+    if (hiImg && curItem && String(curItem.id || '').indexOf('wiki-topic-') === 0) {
+      curItem.title = resolvedTitle;
+      curItem.wikiTitle = resolvedTitle;
+      curItem.previewUrl = hiImg;
+      curItem.fullUrl = hiImg;
+      curItem.thumbUrl = (dossier && dossier.thumbnail) || hiImg;
+      if (scSplitTitle) scSplitTitle.textContent = resolvedTitle;
+      if (scSplitImg) {
+        scSplitImg.hidden = false;
+        attachProgressiveStageImage(scSplitImg, curItem, null);
+      }
+      if (scSplitQuoteCard) scSplitQuoteCard.hidden = true;
+    }
+    if (scSplitRight) scSplitRight.scrollTop = 0;
+    loadWikiTopicIntoDossier(resolvedTitle, true);
+  }
+
+  function closeAllWikiSuggestBoxes() {
+    [topWikiSuggest, dosWikiSuggest].forEach(function (box) {
+      if (box) {
+        box.hidden = true;
+        box.innerHTML = '';
+      }
+    });
+  }
+
+  function bindWikiSearchForm(formEl, inputEl, suggestEl, isTopBar) {
+    if (!formEl || !inputEl || !suggestEl) return;
+    let debounceTimer = null;
+    let activeIdx = -1;
+    let currentSuggestions = [];
+    let lastCompositionEndAt = null;
+    let reqSeq = 0;
+
+    function hideSuggest() {
+      activeIdx = -1;
+      suggestEl.hidden = true;
+    }
+
+    function renderSuggestions() {
+      if (!currentSuggestions.length) {
+        hideSuggest();
+        return;
+      }
+      suggestEl.innerHTML = currentSuggestions.map(function (sug, idx) {
+        const isAct = idx === activeIdx;
+        const thumbHtml = sug.thumbnail
+          ? '<img class="wiki-sug-thumb" src="' + escHtml(resolveImgUrl(sug.thumbnail)) + '" alt="" loading="lazy" decoding="async">'
+          : '<span class="wiki-sug-dot" aria-hidden="true">◇</span>';
+        return (
+          '<button type="button" class="wiki-sug-item' + (isAct ? ' is-active' : '') + '" role="option" aria-selected="' + (isAct ? 'true' : 'false') + '" data-sug-idx="' + idx + '">' +
+            thumbHtml +
+            '<span class="wiki-sug-text">' +
+              '<strong>' + escHtml(sug.title || '') + '</strong>' +
+              (sug.description ? '<small>' + escHtml(sug.description) + '</small>' : '') +
+            '</span>' +
+          '</button>'
+        );
+      }).join('');
+      suggestEl.hidden = false;
+    }
+
+    inputEl.addEventListener('compositionend', function (event) {
+      // 遵循 modern-web-guidance ime-safe-enter-submit：用 event.timeStamp 防 Safari 乱序回车误提交
+      lastCompositionEndAt = event.timeStamp;
+    });
+
+    inputEl.addEventListener('input', function () {
+      const val = inputEl.value.trim();
+      if (debounceTimer) clearTimeout(debounceTimer);
+      if (!val) {
+        currentSuggestions = [];
+        hideSuggest();
+        return;
+      }
+      const mySeq = ++reqSeq;
+      debounceTimer = setTimeout(async function () {
+        const items = await fetchWikiSearchSuggestions(val);
+        if (mySeq !== reqSeq) return;
+        currentSuggestions = items.slice(0, 7);
+        activeIdx = -1;
+        renderSuggestions();
+      }, 210);
+    });
+
+    inputEl.addEventListener('keydown', function (event) {
+      const imeGuard =
+        event.isComposing ||
+        event.keyCode === 229 ||
+        (lastCompositionEndAt !== null && Math.abs(event.timeStamp - lastCompositionEndAt) < 50);
+
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        if (imeGuard) return;
+        formEl.requestSubmit();
+        return;
+      }
+      if (imeGuard || suggestEl.hidden || !currentSuggestions.length) return;
+
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        activeIdx = (activeIdx + 1) % currentSuggestions.length;
+        renderSuggestions();
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        activeIdx = (activeIdx - 1 + currentSuggestions.length) % currentSuggestions.length;
+        renderSuggestions();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        hideSuggest();
+      }
+    });
+
+    suggestEl.addEventListener('click', function (e) {
+      e.stopPropagation();
+      const btn = e.target.closest('[data-sug-idx]');
+      if (!btn) return;
+      const idx = parseInt(btn.getAttribute('data-sug-idx'), 10);
+      const picked = currentSuggestions[idx];
+      if (!picked) return;
+      inputEl.value = picked.title || '';
+      hideSuggest();
+      openWikiSearchTopic(picked.title, picked.lang || 'zh', isTopBar);
+    });
+
+    formEl.addEventListener('submit', function (e) {
+      e.preventDefault();
+      const picked = (activeIdx >= 0 && currentSuggestions[activeIdx]) ? currentSuggestions[activeIdx] : null;
+      const q = picked ? picked.title : inputEl.value.trim();
+      const lang = picked ? (picked.lang || 'zh') : '';
+      hideSuggest();
+      if (!q) return;
+      openWikiSearchTopic(q, lang, isTopBar);
+    });
+  }
+
+  bindWikiSearchForm(topWikiForm, topWikiInput, topWikiSuggest, true);
+  bindWikiSearchForm(dosWikiForm, dosWikiInput, dosWikiSuggest, false);
+
+  if (dosRandomWikiBtn) {
+    dosRandomWikiBtn.addEventListener('click', function () {
+      const pool = (showcaseState.currentRelatedPool || []).filter(function (t) {
+        return t && showcaseState.wikiTrail.indexOf(t) < 0;
+      });
+      const fallbackPool = showcaseState.currentRelatedPool || [];
+      const src = pool.length ? pool : fallbackPool;
+      if (!src.length) return;
+      const pick = src[Math.floor(Math.random() * src.length)];
+      if (pick) {
+        if (dosTrail && dosTrail.scrollIntoView) dosTrail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        loadWikiTopicIntoDossier(pick, true);
+      }
+    });
+  }
+
+  if (scSplitRight) {
+    scSplitRight.addEventListener('click', function (e) {
+      const topicBtn = e.target.closest('[data-wiki-topic]');
+      if (topicBtn) {
+        const topic = topicBtn.getAttribute('data-wiki-topic');
+        if (topic) {
+          if (dosTrail && !dosTrail.hidden && dosTrail.scrollIntoView) {
+            dosTrail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }
+          loadWikiTopicIntoDossier(topic, true);
+        }
+        return;
+      }
+
+      const trailBtn = e.target.closest('[data-trail-idx]');
+      if (trailBtn) {
+        const tIdx = parseInt(trailBtn.getAttribute('data-trail-idx'), 10);
+        const targetTopic = showcaseState.wikiTrail[tIdx];
+        if (targetTopic) {
+          showcaseState.wikiTrail = showcaseState.wikiTrail.slice(0, tIdx + 1);
+          loadWikiTopicIntoDossier(targetTopic, false);
+        }
+        return;
+      }
+
+      const secJump = e.target.closest('[data-sec-jump]');
+      if (secJump) {
+        e.preventDefault();
+        const sIdx = secJump.getAttribute('data-sec-jump');
+        const secEl = document.getElementById('dos-wiki-sec-' + sIdx);
+        if (secEl && secEl.scrollIntoView) {
+          secEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        return;
+      }
+
+      const winBtn = e.target.closest('[data-win-idx]');
+      if (winBtn) {
+        const wIdx = parseInt(winBtn.getAttribute('data-win-idx'), 10) || 0;
+        selectShowcaseIndex(wIdx, 'split');
+      }
+    });
+  }
+
+  if (scSplitCanvas) {
+    scSplitCanvas.addEventListener('wheel', function (e) {
+      if (scSplitImg && scSplitImg.hidden) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.16 : 0.86;
+      showcaseState.splitZoom = Math.max(1.0, Math.min(5.2, showcaseState.splitZoom * factor));
+      if (showcaseState.splitZoom <= 1.02) {
+        showcaseState.splitZoom = 1.0;
+        showcaseState.splitPanX = 0;
+        showcaseState.splitPanY = 0;
+      }
+      applySplitTransform();
+    }, { passive: false });
+
+    scSplitCanvas.addEventListener('dblclick', function (e) {
+      if (e.target.closest('.sc-split-tools')) return;
+      if (showcaseState.splitZoom > 1.08) {
+        resetSplitZoom();
+      } else {
+        showcaseState.splitZoom = 2.25;
+        applySplitTransform();
+      }
+    });
+
+    scSplitCanvas.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0 || e.target.closest('.sc-split-tools')) return;
+      showcaseState.splitDragging = true;
+      showcaseState.splitDragStartX = e.clientX - showcaseState.splitPanX;
+      showcaseState.splitDragStartY = e.clientY - showcaseState.splitPanY;
+      scSplitCanvas.classList.add('dragging');
+    });
+  }
+
+  if (scStageCanvas) {
+    scStageCanvas.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.16 : 0.86;
+      showcaseState.zoom = Math.max(1.0, Math.min(5.2, showcaseState.zoom * factor));
+      if (showcaseState.zoom <= 1.02) {
+        showcaseState.zoom = 1.0;
+        showcaseState.panX = 0;
+        showcaseState.panY = 0;
+      }
+      applyStageTransform();
+    }, { passive: false });
+
+    scStageCanvas.addEventListener('dblclick', function () {
+      if (showcaseState.zoom > 1.08) {
+        resetStageZoom();
+      } else {
+        showcaseState.zoom = 2.25;
+        applyStageTransform();
+      }
+    });
+
+    scStageCanvas.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0) return;
+      showcaseState.dragging = true;
+      showcaseState.dragStartX = e.clientX - showcaseState.panX;
+      showcaseState.dragStartY = e.clientY - showcaseState.panY;
+      scStageCanvas.classList.add('dragging');
+    });
+  }
+
+  window.addEventListener('pointermove', function (e) {
+    if (showcaseState.dragging) {
+      showcaseState.panX = e.clientX - showcaseState.dragStartX;
+      showcaseState.panY = e.clientY - showcaseState.dragStartY;
+      applyStageTransform();
+    }
+    if (showcaseState.splitDragging) {
+      showcaseState.splitPanX = e.clientX - showcaseState.splitDragStartX;
+      showcaseState.splitPanY = e.clientY - showcaseState.splitDragStartY;
+      applySplitTransform();
+    }
+  });
+
+  window.addEventListener('pointerup', function () {
+    if (showcaseState.dragging) {
+      showcaseState.dragging = false;
+      if (scStageCanvas) scStageCanvas.classList.remove('dragging');
+    }
+    if (showcaseState.splitDragging) {
+      showcaseState.splitDragging = false;
+      if (scSplitCanvas) scSplitCanvas.classList.remove('dragging');
+    }
+  });
+
+  function showShowcaseModalElement() {
+    if (!showcaseDialog) return;
+    showcaseDialog.hidden = false;
+    syncModalBodyClass();
+    if (scCloseBtn) {
+      try { scCloseBtn.focus({ preventScroll: true }); } catch (_) {}
+    }
+  }
+
+  function openShowcase(opts) {
+    if (!showcaseDialog) return;
+    rememberModalTrigger();
+    hideBubblePeekNow();
+    setFontMenuOpen(false);
+    setMenuOpen(false);
+    closeAllWikiSuggestBoxes();
+
+    showcaseState.isFavoritesGallery = Boolean(opts && opts.isFavoritesGallery);
+    showcaseState.isCuratedPage = Boolean(opts && opts.isCuratedPage);
+    showcaseState.curatorNote = (opts && opts.curatorNote) || '';
+    showcaseState.curatorAuthor = (opts && opts.curatorAuthor) || '';
+
+    showcaseState.items = (opts && opts.items && opts.items.length)
+      ? opts.items.map(normalizeClientItem)
+      : collectAllWindowItems();
+    showcaseState.index = Math.max(0, Math.min(showcaseState.items.length - 1, (opts && opts.startIndex) || 0));
+    showcaseState.eyebrow = (opts && opts.eyebrow) || 'WORLD WINDOW';
+    showcaseState.title = (opts && opts.title) || '世界之窗';
+    showcaseState.coverOverride = null;
+    showcaseState.lastRenderedWikiItemId = '';
+
+    const firstItem = showcaseState.items[showcaseState.index];
+    showcaseState.domain = (opts && opts.forceDomain) || getDomainForItem(firstItem);
+    showcaseState.activeFacet = (opts && opts.initialFacet) || (firstItem && firstItem.facet) || 'all';
+    if (opts && Array.isArray(opts.galleryItemsOverride)) {
+      showcaseState.galleryItems = opts.galleryItemsOverride.map(normalizeClientItem);
+    } else if (opts && opts.view === 'gallery') {
+      showcaseState.galleryItems = showcaseState.items.slice();
+    }
+
+    if (scCloseBtn) scCloseBtn.textContent = DATA.ui[currentLang].backToBubbles;
+
+    const targetMode = (opts && opts.view) || 'split';
+    switchShowcaseView(targetMode);
+
+    if (isModalOpen(showcaseDialog)) {
+      return;
+    }
+
+    if (prefersReduced || motionPaused) {
+      historyState.captureBeforeTransition();
+      showShowcaseModalElement();
+      return;
+    }
+
     isTransition = true;
+    showcaseOpeningBusy = true;
+    wakeRenderLoop();
     historyState.captureBeforeTransition();
 
     to(sceneState, 'topLineOpacity', 0, 0.3, EASE.linear, 0);
     to(sceneState, 'jointAlpha', 0, 0.2, EASE.linear, 0);
-    to(sceneState, 'frontAlpha', 0, 1.0, EASE.p3io, 0);
+    to(sceneState, 'frontAlpha', 0, 0.85, EASE.p3io, 0);
 
-    // 前景装饰球向外 2 倍距离飞散
     frontItems.forEach(function (fi) {
       const dx = fi.wx - centerX;
       const dy = (fi.wy || centerY) - centerY;
@@ -2063,17 +5279,16 @@
       const dist = Math.hypot(dx, dy);
       fi.transX = fi.wx;
       fi.transY = fi.wy || centerY;
-      to(fi, 'transX', centerX + Math.cos(ang) * dist * 2, 1.0, EASE.p3io, 0);
-      to(fi, 'transY', centerY + Math.sin(ang) * dist * 2, 1.0, EASE.p3io, 0);
+      to(fi, 'transX', centerX + Math.cos(ang) * dist * 2, 0.85, EASE.p3io, 0);
+      to(fi, 'transY', centerY + Math.sin(ang) * dist * 2, 0.85, EASE.p3io, 0);
     });
 
-    // 主泡与已展开子孙泡向屏幕中心聚合缩小
     mainBalls.forEach(function (b) {
       to(b.dom, 'opacity', 0, 0.2, EASE.linear, 0);
       if (b.bgWord) to(b.bgWord, 'alpha', 0, 0.2, EASE.linear, 0);
-      to(b, 'wx', centerX, 0.8, EASE.p2io, 0);
-      to(b, 'wy', centerY, 0.8, EASE.p2io, 0);
-      to(b, 'groupScale', 0.1, 0.8, EASE.p2io, 0);
+      to(b, 'wx', centerX, 0.72, EASE.p2io, 0);
+      to(b, 'wy', centerY, 0.72, EASE.p2io, 0);
+      to(b, 'groupScale', 0.1, 0.72, EASE.p2io, 0);
 
       if (b.under && b.under.isOpen) {
         b.under.lineVis = false;
@@ -2082,9 +5297,9 @@
           to(n.dom, 'opacity', 0, 0.15, EASE.linear, 0, function () {
             n.dom.btn.style.display = 'none';
           });
-          to(n, 'wx', centerX, 0.7, EASE.p2io, 0);
-          to(n, 'wy', centerY, 0.7, EASE.p2io, 0);
-          to(n, 'trgScale', 0.01, 0.7, EASE.p2io, 0);
+          to(n, 'wx', centerX, 0.65, EASE.p2io, 0);
+          to(n, 'wy', centerY, 0.65, EASE.p2io, 0);
+          to(n, 'trgScale', 0.01, 0.65, EASE.p2io, 0);
           n.drops.forEach(function (dr) { dr.isShow = false; stopDroplet(dr, 0.2); });
           if (n.l2 && n.l2.isOpen) {
             n.l2.lineVis = false;
@@ -2093,9 +5308,9 @@
               to(gn.dom, 'opacity', 0, 0.15, EASE.linear, 0, function () {
                 gn.dom.btn.style.display = 'none';
               });
-              to(gn, 'wx', centerX, 0.7, EASE.p2io, 0);
-              to(gn, 'wy', centerY, 0.7, EASE.p2io, 0);
-              to(gn, 'curScale', 0.01, 0.7, EASE.p2io, 0);
+              to(gn, 'wx', centerX, 0.65, EASE.p2io, 0);
+              to(gn, 'wy', centerY, 0.65, EASE.p2io, 0);
+              to(gn, 'curScale', 0.01, 0.65, EASE.p2io, 0);
               gn.drops.forEach(function (dr) { dr.isShow = false; stopDroplet(dr, 0.2); });
             });
           }
@@ -2103,7 +5318,6 @@
       }
     });
 
-    // 转场球在屏幕中心绽放
     const baseSc = W > PHY.borderSP ? W / 1900 : 0.5;
     transitionBall.vis = true;
     transitionBall.spinning = true;
@@ -2111,23 +5325,32 @@
     transitionBall.wy = centerY;
     transitionBall.scale = 0.01;
     transitionBall.groupRz = 0;
-    to(transitionBall, 'scale', baseSc * 0.65, 0.75, EASE.p3o, 0.22);
+    to(transitionBall, 'scale', baseSc * 0.65, 0.68, EASE.p3o, 0.18);
 
     const openModalTimer = { v: 0 };
-    to(openModalTimer, 'v', 1, 0.68, EASE.linear, 0, function () {
-      if (!detailDialog.open) detailDialog.showModal();
+    to(openModalTimer, 'v', 1, 0.56, EASE.linear, 0, function () {
+      showShowcaseModalElement();
+      setTimeout(function () {
+        showcaseOpeningBusy = false;
+      }, 180);
     });
   }
 
-  // 关闭详情卡片后执行返回星图散开与历史状态恢复（close 事件同时覆盖 Esc、背景轻点与返回按钮）
-  detailDialog.addEventListener('close', function () {
-    currentDetailPayload = null;
+  function closeShowcaseModal() {
+    if (!showcaseDialog || showcaseDialog.hidden) return;
+    showcaseDialog.hidden = true;
+    showcaseOpeningBusy = false;
+    syncModalBodyClass();
+    resetStageZoom();
+    resetSplitZoom();
+
     if (!isTransition) {
+      wakeRenderLoop();
       historyState.restoreAfterDetail();
+      restoreModalTriggerFocus();
       return;
     }
 
-    // 先静默重置展开标记，以便 viewStart 飞回原位后再由 historyState 自动重开对应分支
     mainBalls.forEach(function (b) {
       b.isOpen0 = false;
       b.selectScale = 1;
@@ -2146,21 +5369,23 @@
       }
     });
 
-    to(transitionBall, 'scale', 0.01, 0.45, EASE.p1io, 0.05, function () {
+    isTransition = false;
+    wakeRenderLoop();
+
+    to(transitionBall, 'scale', 0.01, 0.45, EASE.p1io, 0.04, function () {
       transitionBall.vis = false;
       transitionBall.spinning = false;
     });
 
-    isTransition = false;
     startTopView(true);
-  });
+    restoreModalTriggerFocus();
+  }
 
   // ==================== 主按钮 DOM 内容渲染与多语言热切换 ====================
   function renderDomCopy() {
     const ui = DATA.ui[currentLang];
     document.documentElement.lang = currentLang === 'zh' ? 'zh-CN' : 'en';
 
-    // Header 控件文案
     const langTrigger = document.getElementById('lang-trigger');
     if (langTrigger) langTrigger.textContent = ui.langLabel;
 
@@ -2179,7 +5404,8 @@
       menuBtn.setAttribute('aria-label', isOpen ? ui.menuCloseLabel : ui.menuOpenLabel);
     }
 
-    // 主泡泡与 L1/L2 子泡泡文案
+    updateTopPillLabels();
+
     mainBalls.forEach(function (b) {
       if (b.id === 0) {
         b.dom.btn.innerHTML =
@@ -2194,6 +5420,7 @@
           '</div>';
       } else if (b.id >= 1 && b.id <= 6) {
         const sec = b.secData;
+        if (!sec) return;
         const closeCls = b.isOpen0 ? ' gl-top-b2m-close' : '';
         b.dom.btn.innerHTML =
           '<div class="gl-top-b2">' +
@@ -2206,10 +5433,15 @@
 
         if (b.under) {
           b.under.l1Nodes.forEach(function (node) {
-            node.dom.txt.innerHTML = node.data.label[currentLang];
+            const curPlItem = getActiveNodeItem(node);
+            node.dom.txt.innerHTML = (DATA.formatBilingualBubbleLabel && curPlItem && curPlItem.title)
+              ? DATA.formatBilingualBubbleLabel(curPlItem)
+              : ((curPlItem && curPlItem.shortTitle) || node.data.label[currentLang]);
             if (node.l2) {
               node.l2.nodes.forEach(function (gn) {
-                gn.dom.txt.innerHTML = gn.data.label[currentLang];
+                gn.dom.txt.innerHTML = (DATA.formatBilingualBubbleLabel && gn.data && gn.data.title)
+                  ? DATA.formatBilingualBubbleLabel(gn.data)
+                  : gn.data.label[currentLang];
               });
             }
           });
@@ -2226,7 +5458,6 @@
       }
     });
 
-    // 全屏导航菜单与红色页脚
     const menuNavList = document.getElementById('menu-nav-list');
     const footerNav = document.getElementById('footer-nav');
     if (menuNavList) {
@@ -2240,11 +5471,15 @@
       }).join('');
     }
 
+    const lwaHref = appState.lwaCatalogUrl || DATA.OBSIDIAN_CATALOG_URL || '#top';
     const extHtml = ui.externalLinks.map(function (l) {
-      return '<a href="#top" data-info-link="1"><span>' + l.prefix + '</span>' + l.label + '</a>';
+      if (l.action === 'lwa') {
+        return '<a href="' + escHtml(lwaHref) + '"><span>' + escHtml(l.prefix) + '</span>' + escHtml(l.label) + '</a>';
+      }
+      return '<a href="#top" data-ext-action="' + escHtml(l.action || 'ball0') + '"><span>' + escHtml(l.prefix) + '</span>' + escHtml(l.label) + '</a>';
     }).join('');
     const polHtml = ui.policyLinks.map(function (p) {
-      return '<a href="#top" data-info-link="1">' + p + '</a>';
+      return '<a href="#top" data-ext-action="tuner">' + escHtml(p) + '</a>';
     }).join('');
 
     const menuExt = document.getElementById('menu-ext-list');
@@ -2255,25 +5490,28 @@
     if (menuPol) menuPol.innerHTML = polHtml;
     if (footExt) {
       footExt.innerHTML = ui.externalLinks.map(function (l) {
-        return '<a href="#top" data-info-link="1"><b>' + l.prefix + '</b>' + l.label + '</a>';
+        if (l.action === 'lwa') {
+          return '<a href="' + escHtml(lwaHref) + '"><b>' + escHtml(l.prefix) + '</b>' + escHtml(l.label) + '</a>';
+        }
+        return '<a href="#top" data-ext-action="' + escHtml(l.action || 'ball0') + '"><b>' + escHtml(l.prefix) + '</b>' + escHtml(l.label) + '</a>';
       }).join('');
     }
     if (footPol) footPol.innerHTML = polHtml;
 
-    if (currentDetailPayload && detailDialog.open) {
-      populateDetailDialog(currentDetailPayload);
+    if (isModalOpen(showcaseDialog) && scCloseBtn) {
+      scCloseBtn.textContent = ui.backToBubbles;
     }
   }
 
-  // 绑定主泡泡按钮点击
+  // 绑定主泡泡按钮点击（0 展开今日全卷画布，1..6 展开子泡，7 换一窗新鲜风物）
   mainBalls.forEach(function (b) {
     b.dom.btn.addEventListener('click', function () {
       if (b.id === 0) {
-        openLeafDetail({ type: 'ball0' });
+        openDailyShowcase();
       } else if (b.id >= 1 && b.id <= 6) {
         toggleMainBall(b.id);
       } else if (b.id === 7) {
-        openLeafDetail({ type: 'ball7' });
+        shuffleWindow();
       }
     });
   });
@@ -2287,6 +5525,12 @@
   const pageTopBtn = document.getElementById('pagetop-btn');
 
   function setMenuOpen(open) {
+    if (open) {
+      hideBubblePeekNow();
+      setFontMenuOpen(false);
+      closeAllWikiSuggestBoxes();
+      renderDrawerFavoritesAndPages();
+    }
     document.body.classList.toggle('menu-open', open);
     globalMenu.classList.toggle('open', open);
     globalMenu.setAttribute('aria-hidden', open ? 'false' : 'true');
@@ -2299,18 +5543,71 @@
   });
 
   window.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && document.body.classList.contains('menu-open') && !detailDialog.open) {
-      setMenuOpen(false);
+    if (e.key === 'Escape') {
+      if (fontPickerMenu && !fontPickerMenu.hidden) {
+        e.preventDefault();
+        setFontMenuOpen(false);
+        return;
+      }
+      if (isModalOpen(tunerDialog)) {
+        e.preventDefault();
+        closeTunerDialog();
+        return;
+      }
+      if (isModalOpen(showcaseDialog)) {
+        e.preventDefault();
+        closeShowcaseModal();
+        return;
+      }
+      if (document.body.classList.contains('menu-open')) {
+        e.preventDefault();
+        setMenuOpen(false);
+        return;
+      }
+    }
+
+    if (isModalOpen(showcaseDialog) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const tag = e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '';
+      const typing = tag === 'input' || tag === 'textarea' || tag === 'select';
+      if (!typing) {
+        if (showcaseState.view === 'stage' || showcaseState.view === 'split') {
+          if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            stepShowcaseItem(-1);
+            return;
+          }
+          if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            stepShowcaseItem(1);
+            return;
+          }
+        }
+        if (e.key === 'r' || e.key === 'R') {
+          e.preventDefault();
+          triggerFacetRandomJump(showcaseState.domain, showcaseState.activeFacet);
+          return;
+        }
+      }
     }
   });
 
   langTrigger.addEventListener('click', function (e) {
     e.stopPropagation();
+    setFontMenuOpen(false);
     langWrap.classList.toggle('open');
   });
 
-  document.addEventListener('click', function () {
+  document.addEventListener('click', function (e) {
     langWrap.classList.remove('open');
+    if (fontPickerMenu && !fontPickerMenu.hidden && (!fontPickerWrap || !fontPickerWrap.contains(e.target))) {
+      setFontMenuOpen(false);
+    }
+    if (topWikiSuggest && !topWikiSuggest.hidden && (!topWikiForm || !topWikiForm.contains(e.target))) {
+      topWikiSuggest.hidden = true;
+    }
+    if (dosWikiSuggest && !dosWikiSuggest.hidden && (!dosWikiForm || !dosWikiForm.contains(e.target))) {
+      dosWikiSuggest.hidden = true;
+    }
   });
 
   document.querySelectorAll('[data-lang-opt]').forEach(function (btn) {
@@ -2328,6 +5625,7 @@
   motionBtn.addEventListener('click', function () {
     motionPaused = !motionPaused;
     renderDomCopy();
+    wakeRenderLoop();
   });
 
   reducedMotionQuery.addEventListener('change', function (ev) {
@@ -2365,23 +5663,24 @@
 
   window.addEventListener('wheel', function (e) {
     if (e.ctrlKey || e.metaKey || prefersReduced || motionPaused) return;
-    if ((detailDialog && detailDialog.open) || document.body.classList.contains('menu-open')) return;
+    if (isAnyModalOpen()) return;
     let dy = e.deltaY;
     if (e.deltaMode === 1) dy *= 36;
     else if (e.deltaMode === 2) dy *= H * 0.85;
     else dy *= 0.92;
     if (dy === 0) return;
     e.preventDefault();
+    hideBubblePeekNow();
     scrollCtrl.target = Math.max(0, Math.min(getMaxScroll(), scrollCtrl.target + dy));
     scrollCtrl.active = true;
   }, { passive: false });
 
   window.addEventListener('keydown', function (e) {
     if (prefersReduced || motionPaused || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return;
-    if ((detailDialog && detailDialog.open) || document.body.classList.contains('menu-open')) return;
+    if (isAnyModalOpen()) return;
     const tag = e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '';
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'button' || tag === 'a') {
-      if (e.key === ' ' || e.key === 'Enter') return;
+      if (e.key === ' ' || e.key === 'Enter' || tag === 'input' || tag === 'textarea') return;
     }
     let delta = 0;
     if (e.key === 'ArrowDown') delta = 96;
@@ -2419,7 +5718,20 @@
       smoothScrollTo(0, false);
     } else if (action === 'ball0') {
       smoothScrollTo(0, true);
-      openLeafDetail({ type: 'ball0' });
+      openDailyShowcase();
+    } else if (action === 'museum-jump') {
+      openExplorerPreset('museum', 'china-tang-song');
+    } else if (action === 'landscape-jump') {
+      openExplorerPreset('landscape', 'natgeo-wildlife');
+    } else if (action === 'fav-gallery') {
+      openFavoritesGallery(0, 'gallery');
+    } else if (action === 'lwa') {
+      const target = appState.lwaCatalogUrl || DATA.OBSIDIAN_CATALOG_URL;
+      if (target) window.location.href = target;
+    } else if (action === 'shuffle') {
+      shuffleWindow();
+    } else if (action === 'tuner') {
+      openTunerDialog();
     } else if (action && action.indexOf('sec') === 0) {
       const id = parseInt(action.slice(3), 10);
       const b = mainBalls[id];
@@ -2432,17 +5744,37 @@
   }
 
   document.addEventListener('click', function (e) {
+    const favThumb = e.target.closest('[data-open-fav-idx]');
+    if (favThumb) {
+      e.preventDefault();
+      const idx = parseInt(favThumb.getAttribute('data-open-fav-idx'), 10) || 0;
+      openFavoritesGallery(idx, 'split');
+      return;
+    }
+    const pageChip = e.target.closest('[data-open-page-slug]');
+    if (pageChip && isHttpServer) {
+      e.preventDefault();
+      const slug = pageChip.getAttribute('data-open-page-slug');
+      if (slug) {
+        fetch('/api/pages/' + encodeURIComponent(slug))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) {
+            if (d && d.ok && d.page) openCuratedPageDoc(d.page, true);
+          })
+          .catch(function () {});
+      }
+      return;
+    }
     const navBtn = e.target.closest('[data-nav-action]');
     if (navBtn) {
       e.preventDefault();
       handleNavAction(navBtn.getAttribute('data-nav-action'));
       return;
     }
-    const infoLink = e.target.closest('[data-info-link]');
-    if (infoLink) {
+    const extLink = e.target.closest('[data-ext-action]');
+    if (extLink) {
       e.preventDefault();
-      setMenuOpen(false);
-      openLeafDetail({ type: 'ball0' });
+      handleNavAction(extLink.getAttribute('data-ext-action'));
     }
   });
 
@@ -2591,11 +5923,32 @@
     loadingWrap._loadAnim = loadAnim;
   }
 
-  // ==================== 主渲染循环（enterFrame） ====================
+  // ==================== 主渲染循环（enterFrame：60fps 稳帧限速 + 弹窗/后台 0% GPU 休眠） ====================
   let lastNow = performance.now();
   let prevScrollY = window.scrollY;
   let scrollDis = 0;
   let frameCount = 0;
+  let rafId = 0;
+
+  function shouldPauseWebGL() {
+    if (document.hidden) return true;
+    if (isModalOpen(showcaseDialog) && !showcaseOpeningBusy) return true;
+    if (isModalOpen(tunerDialog)) return true;
+    return false;
+  }
+
+  wakeRenderLoop = function () {
+    if (rafId || shouldPauseWebGL()) return;
+    rafId = requestAnimationFrame(function (t) {
+      rafId = 0;
+      lastNow = t - 16.67;
+      renderFrame(t);
+    });
+  };
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) wakeRenderLoop();
+  });
 
   function hexRgbNormalized(hex) {
     const n = parseInt(hex.slice(1), 16);
@@ -2603,7 +5956,19 @@
   }
 
   function renderFrame(now) {
-    const dtMs = Math.max(1, now - lastNow);
+    rafId = 0;
+    if (shouldPauseWebGL()) {
+      return;
+    }
+
+    const elapsed = now - lastNow;
+    // 在 120Hz / 144Hz / 165Hz 屏幕上稳锁 60fps 渲染，省下一半以上 GPU 带宽，消除高刷掉帧抖动
+    if (elapsed < 15.2 && frameCount > 2) {
+      rafId = requestAnimationFrame(renderFrame);
+      return;
+    }
+
+    const dtMs = Math.min(50, Math.max(1, elapsed));
     lastNow = now;
     updateConf(dtMs);
     frameCount++;
@@ -2749,6 +6114,10 @@
             const lp = lerpPairFor(node.lerpRate);
             node.wy = node.wy * lp[0] + ty * lp[1];
             node.rz += 0.01 * animStep;
+            node.hoverLerp += ((node.isHovered ? 1 : 0) - node.hoverLerp) * 0.16;
+            if (peekState.node === node && bubblePeekCard && !bubblePeekCard.hidden) {
+              positionBubblePeekCard();
+            }
           }
 
           // L1 DOM 同步
@@ -2918,21 +6287,21 @@
       drawFullQuad(PROG.noise);
     }
 
-    // Pass B: 0.5x 鼠标拖尾与点击水波纹贴图（1:1 复刻 glMouseEffect / glMfObj）
+    // Pass B: 0.5x 鼠标拖尾与点击水波纹贴图（提升边缘水波灵敏度与 6 瓣液态笔刷饱满度）
     if (animStep > 0) {
       const dxMf = Math.abs(effectX - mfPrevX);
       const dyMf = Math.abs(effectY - mfPrevY);
       mfPrevX = effectX;
       mfPrevY = effectY;
       mfTimer += animStep;
-      if ((dxMf >= 3 || dyMf >= 3) && mfTimer >= 4) {
+      if ((dxMf >= 1.5 || dyMf >= 1.5) && mfTimer >= 2) {
         mfTimer = 0;
-        if (trailRings.length >= 30) trailRings.shift();
+        if (trailRings.length >= 42) trailRings.shift();
         trailRings.push({
           x: 0.5 * effectX,
           y: -0.5 * effectY,
-          sc: 0.2,
-          op: 0.9,
+          sc: 0.24,
+          op: 0.94,
           rz: rnd() * Math.PI * 2
         });
       }
@@ -2942,7 +6311,7 @@
       tr.rz += 0.02 * animStep;
       if (animStep > 0) {
         tr.op *= conf.s098a;
-        tr.sc = tr.sc * conf.s098a + 8 * conf.s098b;
+        tr.sc = tr.sc * conf.s098a + 7.2 * conf.s098b;
       }
       if (tr.op <= 0.002) trailRings.splice(i, 1);
     }
@@ -2956,11 +6325,11 @@
     const ew = RT.effect.w;
     const eh = RT.effect.h;
     trailRings.forEach(function (tr) {
-      effectSprites.push([ew * 0.5 + tr.x, -eh * 0.5 + tr.y, 64 * tr.sc, 64 * tr.sc, 0, 0, 1, 1, tr.rz, tr.op]);
+      effectSprites.push([ew * 0.5 + tr.x, -eh * 0.5 + tr.y, 104 * tr.sc, 104 * tr.sc, 0, 0, 1, 1, tr.rz, tr.op]);
     });
     clickRings.forEach(function (cr) {
       if (cr.vis) {
-        effectSprites.push([ew * 0.5 + cr.x, -eh * 0.5 + cr.y, 64 * cr.sc, 64 * cr.sc, 0, 0, 1, 1, cr.rz, cr.op]);
+        effectSprites.push([ew * 0.5 + cr.x, -eh * 0.5 + cr.y, 96 * cr.sc, 96 * cr.sc, 0, 0, 1, 1, cr.rz, cr.op]);
       }
     });
     drawInstances(TEX.brush, effectSprites, ew, eh, null, 0);
@@ -3095,14 +6464,13 @@
       W, H, null, 0
     );
 
-    // Pass D: MiddleRender (横向 31 抽头 Alpha 加权高斯) -> BlurStageRender (纵向 31 抽头 Alpha 加权高斯)
+    // Pass D: MiddleRender (横向 9 抽头硬件双线性高斯) -> BlurStageRender (纵向 9 抽头硬件双线性高斯)
     gl.disable(gl.BLEND);
     setTarget(RT.middle, null);
     gl.useProgram(PROG.blur.p);
     bindTex(0, RT.dummy.t);
     gl.uniform1i(PROG.blur.U.tex, 0);
     gl.uniform2f(PROG.blur.U.uStep, 1 / RT.middle.w, 0);
-    gl.uniform1fv(PROG.blur.U.uWeights, BLUR_WEIGHTS);
     drawFullQuad(PROG.blur);
 
     setTarget(RT.blur, null);
@@ -3292,6 +6660,80 @@
     gl.uniform2f(PROG.display.U.asp, aspX, aspY);
     drawFullQuad(PROG.display);
 
+    // z = 1: 子泡泡放大全画幅液态水波折射画层（贴合融球有机边界 + 肥皂泡球面微透镜与釉彩边缘）
+    if (!isTransition) {
+      let artProgramBound = false;
+      mainBalls.forEach(function (b) {
+        const under = b.under;
+        if (!under || under.status !== 1) return;
+        under.l1Nodes.forEach(function (node) {
+          const nd = node.dom;
+          const sc = node.baseScale * node.trgScale * node.ballScale * node.selectScale;
+          const artAlpha = Math.min(1, nd.opacity * nd.thumOp);
+          if (sc > 0.04 && artAlpha > 0.02 && !(node.wy + 240 * sc < -H - 220 || node.wy - 240 * sc > 220)) {
+            const artItem = getActiveNodeItem(node);
+            const artTex = artItem ? getArtBubbleTex(artItem) : null;
+            if (artTex) {
+              if (!artProgramBound) {
+                artProgramBound = true;
+                gl.useProgram(PROG.artBubble.p);
+                gl.uniform2f(PROG.artBubble.U.uRes, W, H);
+                gl.uniform1f(PROG.artBubble.U.uRot, 0);
+                gl.uniform2f(PROG.artBubble.U.uCanvasPx, canvas.width, canvas.height);
+                gl.uniform2f(PROG.artBubble.U.uAsp, aspX, aspY);
+                gl.uniform1f(PROG.artBubble.U.uTime, sceneState.dispTime);
+                gl.uniform1f(PROG.artBubble.U.uStrength, sceneState.dispStrength);
+                bindTex(1, RT.blur.t);
+                gl.uniform1i(PROG.artBubble.U.uBlur, 1);
+                bindTex(2, RT.noise.t);
+                gl.uniform1i(PROG.artBubble.U.uNoise, 2);
+                bindTex(3, RT.effect.t);
+                gl.uniform1i(PROG.artBubble.U.uEffect, 3);
+                gl.uniform1i(PROG.artBubble.U.uArt, 0);
+              }
+              bindTex(0, artTex);
+              gl.uniform2f(PROG.artBubble.U.uPos, node.wx, node.wy);
+              gl.uniform2f(PROG.artBubble.U.uSize, 284 * sc, 284 * sc);
+              gl.uniform1f(PROG.artBubble.U.uHover, node.hoverLerp || 0);
+              gl.uniform1f(PROG.artBubble.U.uAlpha, artAlpha);
+              drawPlaneQuad(PROG.artBubble);
+            }
+          }
+
+          if (node.l2 && node.l2.lineVis) {
+            node.l2.nodes.forEach(function (gn) {
+              if (gn.curScale <= 0.04 || gn.dom.opacity <= 0.02 || gn.wx <= -3500) return;
+              const gTex = gn.data ? getArtBubbleTex(gn.data) : null;
+              if (!gTex) return;
+              if (!artProgramBound) {
+                artProgramBound = true;
+                gl.useProgram(PROG.artBubble.p);
+                gl.uniform2f(PROG.artBubble.U.uRes, W, H);
+                gl.uniform1f(PROG.artBubble.U.uRot, 0);
+                gl.uniform2f(PROG.artBubble.U.uCanvasPx, canvas.width, canvas.height);
+                gl.uniform2f(PROG.artBubble.U.uAsp, aspX, aspY);
+                gl.uniform1f(PROG.artBubble.U.uTime, sceneState.dispTime);
+                gl.uniform1f(PROG.artBubble.U.uStrength, sceneState.dispStrength);
+                bindTex(1, RT.blur.t);
+                gl.uniform1i(PROG.artBubble.U.uBlur, 1);
+                bindTex(2, RT.noise.t);
+                gl.uniform1i(PROG.artBubble.U.uNoise, 2);
+                bindTex(3, RT.effect.t);
+                gl.uniform1i(PROG.artBubble.U.uEffect, 3);
+                gl.uniform1i(PROG.artBubble.U.uArt, 0);
+              }
+              bindTex(0, gTex);
+              gl.uniform2f(PROG.artBubble.U.uPos, gn.wx, gn.wy);
+              gl.uniform2f(PROG.artBubble.U.uSize, 284 * gn.curScale, 284 * gn.curScale);
+              gl.uniform1f(PROG.artBubble.U.uHover, 0);
+              gl.uniform1f(PROG.artBubble.U.uAlpha, Math.min(1, gn.dom.opacity));
+              drawPlaneQuad(PROG.artBubble);
+            });
+          }
+        });
+      });
+    }
+
     // z = 2: glFrontBall._dMesh（反相水晶前景小气泡层）
     sceneState.frontTime += 0.02 * animStep;
     gl.useProgram(PROG.frontDisplay.p);
@@ -3319,22 +6761,164 @@
     gl.uniform2f(PROG.sand.U.shift, sceneState.sandShiftX, 0);
     drawFullQuad(PROG.sand);
 
-    requestAnimationFrame(renderFrame);
+    rafId = requestAnimationFrame(renderFrame);
   }
 
-  // ==================== 启动入口 ====================
+  // ==================== 启动入口、本地 feed-profile 状态水合与 Fable 专属专题 URL 路由 ====================
+  let initialRouteHandled = false;
+  async function handleInitialUrlRoute() {
+    if (initialRouteHandled) return false;
+    initialRouteHandled = true;
+    try {
+      const pathMatch = (location.pathname || '').match(/^\/p\/([^/?#]+)/);
+      const sp = new URLSearchParams(location.search || '');
+      const slug = (pathMatch && decodeURIComponent(pathMatch[1])) || sp.get('page') || '';
+      if (slug && isHttpServer) {
+        const r = await fetch('/api/pages/' + encodeURIComponent(slug));
+        if (r.ok) {
+          const d = await r.json();
+          if (d && d.ok && d.page) {
+            openCuratedPageDoc(d.page, false);
+            return true;
+          }
+        }
+      }
+
+      const qParam = sp.get('q') || sp.get('keywords') || '';
+      if (qParam && isHttpServer) {
+        const apiUrl = '/api/curate?q=' + encodeURIComponent(qParam) +
+          '&title=' + encodeURIComponent(sp.get('title') || qParam) +
+          '&note=' + encodeURIComponent(sp.get('note') || '') +
+          '&domain=' + encodeURIComponent(sp.get('domain') || '') +
+          '&wiki=' + encodeURIComponent(sp.get('wiki') || '') +
+          '&author=' + encodeURIComponent(sp.get('author') || 'Fable');
+        const r = await fetch(apiUrl);
+        if (r.ok) {
+          const d = await r.json();
+          if (d && d.ok && d.page) {
+            openCuratedPageDoc(d.page, false);
+            return true;
+          }
+        }
+      }
+
+      const wikiParam = sp.get('wiki') || '';
+      if (wikiParam) {
+        openWikiSearchTopic(wikiParam, 'zh', true);
+        return true;
+      }
+
+      if (sp.get('favorites') === '1') {
+        openFavoritesGallery(0, 'gallery');
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  async function hydrateFromServer() {
+    renderDrawerFavoritesAndPages();
+    if (!isHttpServer) {
+      await handleInitialUrlRoute();
+      scheduleOpenModeSeenIfNeeded();
+      return;
+    }
+    try {
+      const resp = await fetch('/api/state');
+      if (!resp.ok) {
+        await handleInitialUrlRoute();
+        return;
+      }
+      const st = await resp.json();
+      let needRebuild = false;
+
+      if (st.seen && typeof st.seen === 'object') {
+        appState.seenMap = Object.assign({}, appState.seenMap, st.seen);
+        saveLocalJson('ww_seen_v2', appState.seenMap);
+      }
+      if (Array.isArray(st.favorites)) {
+        if (st.favorites.length || !appState.favorites.length) {
+          appState.favorites = st.favorites.map(normalizeClientItem);
+          saveLocalJson('ww_favorites_v1', appState.favorites);
+        }
+      }
+      if (Array.isArray(st.curatedPages)) {
+        appState.curatedPages = st.curatedPages;
+      }
+      if (st.lwaCatalogUrl) appState.lwaCatalogUrl = st.lwaCatalogUrl;
+      if (st.lwaAskUrl) appState.lwaAskUrl = st.lwaAskUrl;
+      if (Array.isArray(st.aiInbox) && st.aiInbox.length) {
+        appState.aiInbox = st.aiInbox;
+        needRebuild = true;
+      }
+      if (Array.isArray(st.livePool) && st.livePool.length) {
+        appState.livePool = st.livePool;
+        needRebuild = true;
+      }
+      if (st.preferences && typeof st.preferences === 'object') {
+        const prevTheme = appState.preferences.theme;
+        const prevFont = appState.preferences.fontPreset;
+        appState.preferences = Object.assign({}, appState.preferences, st.preferences);
+        saveLocalJson('ww_prefs_v2', appState.preferences);
+        if (appState.preferences.theme !== prevTheme) applyTheme(appState.preferences.theme, true);
+        if (appState.preferences.fontPreset !== prevFont) applyFontPreset(appState.preferences.fontPreset, true);
+        needRebuild = true;
+      }
+
+      updateTopPillLabels();
+      renderDrawerFavoritesAndPages();
+      renderDomCopy();
+
+      const openedRoute = await handleInitialUrlRoute();
+
+      if (!openedRoute && needRebuild && !mainBalls.some(function (b) { return b.isOpen0; }) && !isModalOpen(showcaseDialog)) {
+        const nextSecs = DATA.buildWindowFeed(
+          appState.livePool,
+          appState.preferences,
+          appState.seenMap,
+          appState.aiInbox,
+          appState.currentSeed
+        );
+        rebuildAllSections(nextSecs);
+      }
+
+      scheduleOpenModeSeenIfNeeded();
+      wakeRenderLoop();
+
+      // 若后台尚未缓存 4K 开放馆藏池，低优先级静默预热拉取供下次「换一窗」秒开使用
+      if (!appState.livePool.length) {
+        fetch('/api/feed', { priority: 'low' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+          const pool = d && (d.livePool || d.items);
+          if (Array.isArray(pool) && pool.length) {
+            appState.livePool = pool;
+          }
+        }).catch(function () {});
+      }
+    } catch (_) {
+      await handleInitialUrlRoute();
+      scheduleOpenModeSeenIfNeeded();
+    }
+  }
+
   let resizeTimer = null;
   window.addEventListener('resize', function () {
     onResize();
+    wakeRenderLoop();
     if (resizeTimer) clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(onResize, 400);
+    resizeTimer = setTimeout(function () {
+      onResize();
+      wakeRenderLoop();
+    }, 400);
   });
 
   renderDomCopy();
+  renderDrawerFavoritesAndPages();
   onResize();
+  hydrateFromServer();
 
-  // 暴露调试与二次开发接口，方便后续在世界之窗项目里直接控制
+  // 暴露调试与 AI 协作二次开发接口
   window.WorldWindowBubbles = {
+    appState: appState,
     mainBalls: mainBalls,
     frontItems: frontItems,
     jointItems: jointItems,
@@ -3343,7 +6927,21 @@
     smoothScrollTo: smoothScrollTo,
     toggleMainBall: toggleMainBall,
     onL1BallClick: onL1BallClick,
-    openLeafDetail: openLeafDetail,
+    openShowcase: openShowcase,
+    closeShowcaseModal: closeShowcaseModal,
+    openDailyShowcase: openDailyShowcase,
+    openExplorerPreset: openExplorerPreset,
+    openFavoritesGallery: openFavoritesGallery,
+    openCuratedPageDoc: openCuratedPageDoc,
+    openWikiSearchTopic: openWikiSearchTopic,
+    toggleFavoriteItem: toggleFavoriteItem,
+    loadFacetGalleryStream: loadFacetGalleryStream,
+    triggerFacetRandomJump: triggerFacetRandomJump,
+    openTunerDialog: openTunerDialog,
+    closeTunerDialog: closeTunerDialog,
+    shuffleWindow: shuffleWindow,
+    applyTheme: applyTheme,
+    applyFontPreset: applyFontPreset,
     setLang: function (lang) {
       if (DATA.ui[lang]) {
         currentLang = lang;
@@ -3352,10 +6950,10 @@
     }
   };
 
-  // 短暂展示红幕加载页后触发转场球收缩揭幕（与官网光纤首屏节奏一致）
+  // 短暂展示揭幕层后触发转场球收缩揭幕
   setTimeout(runInitialOpening, prefersReduced ? 0 : 80);
-  requestAnimationFrame(function (t) {
-    lastNow = t;
+  rafId = requestAnimationFrame(function (t) {
+    lastNow = t - 16.67;
     renderFrame(t);
   });
 })();

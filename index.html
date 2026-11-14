@@ -3,31 +3,102 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>世界之窗 · 心绪泡泡 — Window of Floating Worlds</title>
+  <title>世界之窗 · 漫游画册 — Window of Floating Worlds</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Libre+Caslon+Display&family=Libre+Franklin:wght@300;400;500;600&family=Noto+Sans+JP:wght@400;500&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400;0,6..96,500;1,6..96,400&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&family=Instrument+Serif:ital@0;1&family=Libre+Caslon+Display&family=Libre+Franklin:wght@300;400;500;600&family=Noto+Sans+SC:wght@300;400;500;600&family=Noto+Serif+SC:wght@200;300;400;500;600&family=Playfair+Display:ital,wght@0,400;0,500;1,400&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link id="zh-font-primary" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@chinese-fonts/zqfs@3.0.0/dist/ZhuqueFangsong-Regular/result.css">
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-  <!-- 单一 WebGL2 世界画布与 8% Overlay 滤镜层（#gl-world） -->
+  <!-- 单一 WebGL2 世界画布与柔和纸感叠层（#gl-world） -->
   <div id="gl-world" aria-hidden="true">
     <div class="gl-world-overlay"></div>
   </div>
 
-  <!-- 开场红幕揭幕层（glLoading） -->
+  <!-- 开场揭幕层（glLoading） -->
   <div id="gl-loading" aria-hidden="true">
     <div class="gl-loading-bg"></div>
     <div class="gl-loading-logo">
-      <span class="gl-loading-logo-mark">WINDOW·BUBBLE</span>
+      <span class="gl-loading-logo-mark">WORLD · WINDOW</span>
       <span class="gl-loading-logo-sub">Window of Floating Worlds</span>
     </div>
     <div class="gl-loading-ring"></div>
   </div>
 
-  <!-- 顶部常驻控制栏：动效暂停 + 语言切换 + 红色菜单按钮 -->
-  <header class="site-header">
-    <button type="button" class="motion-btn" id="motion-toggle">暂停动效</button>
+  <!-- 左下动效开关 -->
+  <button type="button" class="motion-btn" id="motion-toggle">暂停动效</button>
+
+  <!-- 顶部常驻漫游控制栏：换一窗 + 漫游画卷 + 私藏画匣 + 维基检索 + 主题 + 字体 + 调音台 + 收藏库 -->
+  <header class="site-header" id="site-header">
+    <div class="top-pills" role="toolbar" aria-label="世界之窗快捷控制">
+      <button type="button" class="top-pill" id="shuffle-btn" title="刷新一批未看过的 4K 风物与句子">
+        <span class="top-pill-icon" id="shuffle-icon" aria-hidden="true">↻</span>
+        <span id="shuffle-label">换一窗</span>
+      </button>
+
+      <button type="button" class="top-pill" id="era-gallery-btn" title="按文明、时代、自然纪实或微距深空滚动浏览整组 4K 画卷">
+        <svg class="ui-svg-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true">
+          <rect x="2" y="2.5" width="5" height="11" rx="1"></rect>
+          <rect x="9" y="2.5" width="5" height="4.5" rx="1"></rect>
+          <rect x="9" y="9" width="5" height="4.5" rx="1"></rect>
+        </svg>
+        <span id="era-gallery-label">漫游画卷</span>
+      </button>
+
+      <button type="button" class="top-pill" id="fav-gallery-btn" title="打开点心收藏的私藏画匣 Gallery">
+        <svg class="ui-svg-icon ui-heart-svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" aria-hidden="true">
+          <path d="M8 13.6s-5.3-3.2-5.3-7A3.1 3.1 0 0 1 8 4.4a3.1 3.1 0 0 1 5.3 2.2c0 3.8-5.3 7-5.3 7Z"></path>
+        </svg>
+        <span id="fav-gallery-label">画匣</span>
+        <span class="top-pill-badge" id="fav-count-badge">0</span>
+      </button>
+
+      <form role="search" class="wiki-search-form wiki-search-form--top" id="top-wiki-form" autocomplete="off">
+        <label class="sr-only" for="top-wiki-input">搜索维基百科词条</label>
+        <svg class="ui-svg-icon wiki-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+          <circle cx="7" cy="7" r="4.5"></circle>
+          <path d="m10.5 10.5 3.2 3.2"></path>
+        </svg>
+        <input type="search" id="top-wiki-input" class="wiki-search-input" placeholder="搜 Wiki 词条…" autocomplete="off" spellcheck="false">
+        <button type="submit" class="wiki-search-submit" aria-label="执行维基搜索">↵</button>
+        <div class="wiki-suggest-box" id="top-wiki-suggest" role="listbox" aria-label="维基词条联想" hidden></div>
+      </form>
+
+      <button type="button" class="top-pill" id="theme-cycle-btn" title="点击切换气泡与画布配色主题">
+        <span class="top-pill-dot" id="theme-dot" aria-hidden="true"></span>
+        <span id="theme-btn-label">晨露影青</span>
+      </button>
+
+      <div class="font-picker-wrap" id="font-picker-wrap">
+        <button type="button" class="top-pill" id="font-cycle-btn" aria-haspopup="true" aria-expanded="false" title="点击展开中西文美学字体现场挑选">
+          <span class="top-pill-aa" aria-hidden="true">Aa</span>
+          <span id="font-btn-label">朱雀仿宋</span>
+          <span class="top-pill-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="font-picker-menu" id="font-picker-menu" role="menu" aria-label="挑选全站中西文字体" hidden>
+          <div class="font-picker-head">
+            <span>挑选全站中西文衬线/古籍字体</span>
+            <small>点选即刻生效并自动记住</small>
+          </div>
+          <div class="font-picker-list" id="font-picker-list"></div>
+        </div>
+      </div>
+
+      <button type="button" class="top-pill top-pill--accent" id="tuner-open-btn" aria-haspopup="dialog" aria-controls="tuner-dialog">
+        <span aria-hidden="true">✦</span>
+        <span id="tuner-btn-label">频道与偏好</span>
+        <span class="top-pill-badge" id="seen-count-badge">0</span>
+      </button>
+
+      <a class="top-pill top-pill--link" id="lwa-open-link" href="#" title="在 Obsidian 打开你的 LWA 收藏库" hidden>
+        <svg class="ui-svg-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true">
+          <path d="M2.5 3.5h4.2c1 0 1.3.5 1.3 1.2v8.3c0-.6-.5-1-1.3-1H2.5V3.5Zm11 0H9.3c-1 0-1.3.5-1.3 1.2v8.3c0-.6.5-1 1.3-1h4.2V3.5Z"></path>
+        </svg>
+        <span id="lwa-btn-label">收藏库 ↗</span>
+      </a>
+    </div>
 
     <div class="lang-wrap" id="lang-wrap">
       <button type="button" class="lang-trigger" id="lang-trigger">ZH</button>
@@ -39,13 +110,13 @@
       </div>
     </div>
 
-    <button type="button" class="menu-btn" id="menu-btn" aria-label="打开导航菜单">
+    <button type="button" class="menu-btn" id="menu-btn" aria-label="打开导航与频道总览">
       <span class="menu-bar menu-bar--1"></span>
       <span class="menu-bar menu-bar--2"></span>
     </button>
   </header>
 
-  <!-- 全屏红色导航抽屉（#global-menu） -->
+  <!-- 全屏导航抽屉（#global-menu） -->
   <nav class="global-menu" id="global-menu" aria-hidden="true">
     <div class="global-menu-watermark" aria-hidden="true">
       <span>WINDOW OF</span>
@@ -56,6 +127,23 @@
       <ul class="menu-nav-list" id="menu-nav-list"></ul>
 
       <div class="menu-sub-col">
+        <!-- 抽屉私藏画匣 Gallery：点心收藏的画作随时在此预览与打开 -->
+        <section class="drawer-gallery-box" id="drawer-fav-section" aria-label="私藏画匣">
+          <div class="drawer-box-head">
+            <span class="drawer-box-title">♡ 私藏画匣 · GALLERY (<span id="drawer-fav-count">0</span>)</span>
+            <button type="button" class="drawer-box-link" id="drawer-open-fav-all">展开全部 ↗</button>
+          </div>
+          <div class="drawer-fav-grid" id="drawer-fav-grid"></div>
+        </section>
+
+        <!-- Fable / AI 专属定制主题页书架 -->
+        <section class="drawer-gallery-box" id="drawer-pages-section" aria-label="专题特辑" hidden>
+          <div class="drawer-box-head">
+            <span class="drawer-box-title">✦ 专题特辑 · CURATIONS</span>
+          </div>
+          <div class="drawer-pages-list" id="drawer-pages-list"></div>
+        </section>
+
         <div class="menu-ext-list" id="menu-ext-list"></div>
         <div class="menu-policy-list" id="menu-policy-list"></div>
         <div class="menu-lang-inline">
@@ -66,8 +154,8 @@
       </div>
 
       <div class="global-menu-foot">
-        <span>© WORLD WINDOW &amp; MOOD BUBBLES ARCHIVE</span>
-        <span>WINDOW·BUBBLE</span>
+        <span>© WORLD WINDOW · AI-COLLABORATIVE DAILY ATLAS</span>
+        <span>WORLD · WINDOW</span>
       </div>
     </div>
   </nav>
@@ -75,14 +163,38 @@
   <!-- 固定交互热区舞台（所有主泡泡、L1 子泡泡、L2 孙泡泡按钮挂载点） -->
   <div id="fix-stage"></div>
 
-  <!-- 滚动文档流：承载 Hero 大标题高度与底部红色页脚 -->
+  <!-- 子泡泡旁悬浮速览与一键直达卡片（#bubble-peek-card，遵循 WCAG 3.2.1 悬停不夺焦点） -->
+  <aside class="bubble-peek-card" id="bubble-peek-card" aria-label="风物速览与直达跳转" hidden>
+    <div class="peek-top">
+      <span class="peek-badge" id="peek-badge">WINDOW 01</span>
+      <div class="peek-stepper" id="peek-stepper" hidden>
+        <button type="button" class="peek-step-btn" id="peek-prev-btn" aria-label="同泡上一件">‹</button>
+        <span id="peek-step-text">1 / 2</span>
+        <button type="button" class="peek-step-btn" id="peek-next-btn" aria-label="同泡下一件">›</button>
+      </div>
+    </div>
+    <h3 class="peek-title" id="peek-title"></h3>
+    <div class="peek-en" id="peek-en"></div>
+    <p class="peek-desc" id="peek-desc"></p>
+    <div class="peek-actions">
+      <button type="button" class="peek-btn peek-btn--primary" id="peek-open-split">◫ 图文并排 · Wiki</button>
+      <button type="button" class="peek-btn" id="peek-open-stage">⛶ 全屏 4K</button>
+      <button type="button" class="peek-btn" id="peek-open-gallery">◈ 同代画卷</button>
+      <button type="button" class="peek-btn fav-heart-btn" id="peek-fav-btn" aria-label="收藏画作" aria-pressed="false">
+        <span class="fav-heart-glyph" aria-hidden="true">♡</span> 收藏
+      </button>
+      <a class="peek-btn peek-btn--ext" id="peek-source-link" href="#" target="_blank" rel="noopener">↗ 原馆藏</a>
+    </div>
+  </aside>
+
+  <!-- 滚动文档流：承载 Hero 大标题高度与底部页脚 -->
   <div id="scrollFix">
     <main id="contents"></main>
 
     <footer id="footer">
       <button type="button" class="gl-pagetop" id="pagetop-btn" aria-label="返回顶部">
         <span class="gl-pagetop-ring"></span>
-        <svg viewBox="0 0 24 24" fill="none" stroke="#e50012" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M12 19V5"></path>
           <path d="m6 11 6-6 6 6"></path>
         </svg>
@@ -112,40 +224,316 @@
       </div>
 
       <div class="footer-bottom">
-        <div class="footer-copy">© WORLD WINDOW &amp; MOOD BUBBLES ARCHIVE</div>
-        <div class="footer-mark">WINDOW·BUBBLE</div>
+        <div class="footer-copy">© WORLD WINDOW · AI-COLLABORATIVE DAILY ATLAS</div>
+        <div class="footer-mark">WORLD · WINDOW</div>
       </div>
     </footer>
   </div>
 
-  <!-- 叶子节点预览卡片（原生 <dialog closedby="any"> 支持点击遮罩或按 Esc 关闭并自动恢复展开位置） -->
-  <dialog class="detail-dialog" id="detail-dialog" closedby="any" aria-labelledby="detail-title">
-    <form method="dialog" class="detail-card">
-      <button type="submit" class="detail-close-icon" aria-label="关闭详情卡片">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#222222" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-          <path d="M3.5 3.5 12.5 12.5M12.5 3.5 3.5 12.5"></path>
-        </svg>
-      </button>
-
-      <div class="detail-head">
-        <div class="detail-art">
-          <img id="detail-art-img" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="">
-        </div>
+  <!-- 频道权重与 AI 协作偏好抽屉（非 Top-Layer z-index:920，确保 Trancy 划词浮层正常置顶） -->
+  <div class="tuner-modal" id="tuner-dialog" role="dialog" aria-modal="true" aria-labelledby="tuner-title" hidden>
+    <div class="tuner-backdrop" id="tuner-backdrop"></div>
+    <div class="tuner-sheet">
+      <div class="tuner-head">
         <div>
-          <span class="detail-tag" id="detail-tag"></span>
-          <h2 class="detail-title" id="detail-title"></h2>
+          <span class="tuner-eyebrow">CUSTOM FEED &amp; AI PROFILE</span>
+          <h2 class="tuner-title" id="tuner-title">世界之窗 · 推流调音台</h2>
+        </div>
+        <button type="button" class="tuner-close-btn" id="tuner-close-btn" aria-label="关闭调音台">✕</button>
+      </div>
+
+      <div class="tuner-body">
+        <!-- 0. 抽屉内私藏画匣 Gallery 速览与直达 -->
+        <section class="tuner-sec" id="tuner-fav-sec">
+          <div class="tuner-sec-head">
+            <h3>私藏画匣 · Saved Gallery (<span id="tuner-fav-count">0</span>)</h3>
+            <button type="button" class="tuner-link-btn" id="tuner-open-fav-gallery">全屏浏览画匣 ↗</button>
+          </div>
+          <div class="tuner-fav-strip" id="tuner-fav-strip"></div>
+        </section>
+
+        <!-- 1. 主题配色挑选 -->
+        <section class="tuner-sec">
+          <div class="tuner-sec-head">
+            <h3>泡泡配色主题</h3>
+            <span>点击即刻切换清透釉色</span>
+          </div>
+          <div class="tuner-grid-2" id="tuner-theme-grid"></div>
+        </section>
+
+        <!-- 2. 6款中西文字体挑选展台 -->
+        <section class="tuner-sec">
+          <div class="tuner-sec-head">
+            <h3>全站中西文字体搭配（6 款实测可挑）</h3>
+            <span>点选即刻切换中英衬线/仿宋/明朝/细楷</span>
+          </div>
+          <div class="tuner-grid-2" id="tuner-font-grid"></div>
+        </section>
+
+        <!-- 3. 已看识别去重策略 -->
+        <section class="tuner-sec">
+          <div class="tuner-sec-head">
+            <h3>已看识别与去重</h3>
+            <span id="tuner-seen-stat">已记 0 件</span>
+          </div>
+          <div class="tuner-seg" id="tuner-seen-seg" role="radiogroup" aria-label="已看去重模式">
+            <button type="button" class="tuner-seg-btn active" data-seen-mode="inspect">点开气泡算已看</button>
+            <button type="button" class="tuner-seg-btn" data-seen-mode="open">每次打开整窗换新</button>
+            <button type="button" class="tuner-seg-btn" data-seen-mode="off">不去重</button>
+          </div>
+          <div class="tuner-seen-row">
+            <span class="tuner-hint">标为已看的内容下次刷新不再重复出现。</span>
+            <button type="button" class="tuner-link-btn" id="tuner-reset-seen">清空已看记录</button>
+          </div>
+        </section>
+
+        <!-- 4. 自由口味备注 -->
+        <section class="tuner-sec">
+          <div class="tuner-sec-head">
+            <h3>随手写口味备注（AI 协作可读）</h3>
+            <span>双向同步 preferences.md</span>
+          </div>
+          <textarea id="tuner-note" class="tuner-textarea" rows="3" placeholder="随便写想多看或少看什么，比如：多来点宋瓷影青、莫奈水面、冰川极光和冷幽默短句，不要鸡汤…"></textarea>
+        </section>
+
+        <!-- 5. 6 个频道权重与随便写关键词 -->
+        <section class="tuner-sec">
+          <div class="tuner-sec-head">
+            <h3>频道权重与随便写偏好词（0–5）</h3>
+            <span>调为 0 会让出气泡给高权重频道</span>
+          </div>
+          <div class="tuner-channels" id="tuner-channels-list"></div>
+        </section>
+      </div>
+
+      <div class="tuner-foot">
+        <span class="tuner-sync-msg" id="tuner-sync-msg">同步目录：feed-profile/preferences.md</span>
+        <div class="tuner-foot-btns">
+          <button type="button" class="tuner-btn-ghost" id="tuner-save-only">仅保存</button>
+          <button type="button" class="tuner-btn-primary" id="tuner-apply-shuffle">保存并换一窗</button>
         </div>
       </div>
+    </div>
+  </div>
 
-      <p class="detail-subtitle" id="detail-subtitle"></p>
-      <p class="detail-body" id="detail-body"></p>
-      <div class="detail-meta" id="detail-meta"></div>
+  <!-- 100vw × 100dvh 三态一体漫游展厅（非 Top-Layer z-index:900，完美兼容 Trancy 划词与双语侧栏）：
+       1) 📜 时代瀑布画卷（选任意文明/时代/国家/地貌即滚动看整组高清大图 + 加载更多）
+       2) ◫ 图文并排 · Wiki（左侧 4K 原图无级缩放 + 底部胶片条，右侧独立滚动维基全章 & LWA 收藏库）
+       3) ⛶ 全屏 4K 沉浸（纯享全屏画幅 + 底部胶片条） -->
+  <div class="showcase-modal" id="showcase-dialog" role="dialog" aria-modal="true" aria-label="世界之窗全屏漫游展厅" hidden>
+    <div class="sc-shell">
+      <!-- 顶部统一控制栏：上一件/下一件 + 三模式秒切 + 偏爱/原馆藏/收藏库/返回星图 -->
+      <header class="sc-topbar" id="sc-topbar">
+        <div class="sc-top-left">
+          <span class="sc-eyebrow" id="sc-eyebrow">WINDOW 01</span>
+          <div class="sc-step-nav">
+            <button type="button" class="sc-nav-arrow" id="sc-prev-btn" title="上一件（键盘 ←）" aria-label="上一件">‹</button>
+            <span class="sc-counter" id="sc-counter">01 / 04</span>
+            <button type="button" class="sc-nav-arrow" id="sc-next-btn" title="下一件（键盘 →）" aria-label="下一件">›</button>
+          </div>
+        </div>
 
-      <div class="detail-actions">
-        <button type="submit" class="detail-back-btn" id="detail-back-btn">返回泡泡星图</button>
-      </div>
-    </form>
-  </dialog>
+        <div class="sc-mode-tabs" role="tablist" aria-label="展厅视图模式切换">
+          <button type="button" class="sc-mode-tab" id="sc-tab-gallery" data-sc-mode="gallery" role="tab" aria-selected="false">
+            <span aria-hidden="true">◈</span> 漫游画卷
+          </button>
+          <button type="button" class="sc-mode-tab active" id="sc-tab-split" data-sc-mode="split" role="tab" aria-selected="true">
+            <span aria-hidden="true">◫</span> 图文并排 · Wiki
+          </button>
+          <button type="button" class="sc-mode-tab" id="sc-tab-stage" data-sc-mode="stage" role="tab" aria-selected="false">
+            <span aria-hidden="true">⛶</span> 全屏 4K 沉浸
+          </button>
+        </div>
+
+        <div class="sc-top-right">
+          <button type="button" class="sc-hud-btn fav-heart-btn" id="sc-fav-btn" aria-label="点心收藏画作" aria-pressed="false" title="点心收入私藏画匣 Gallery">
+            <span class="fav-heart-glyph" aria-hidden="true">♡</span>
+            <span id="sc-fav-label">点心收藏</span>
+          </button>
+          <button type="button" class="sc-hud-btn" id="sc-open-fav-btn" title="打开私藏画匣 Gallery">
+            画匣 (<span id="sc-fav-count">0</span>)
+          </button>
+          <button type="button" class="sc-hud-btn" id="sc-sig-less" title="后台记一笔少推这类">少推</button>
+          <a class="sc-hud-btn" id="sc-source-link" href="#" target="_blank" rel="noopener" title="在新标签打开博物馆原馆藏页或地图">
+            ↗ 原馆藏
+          </a>
+          <a class="sc-hud-btn" id="sc-lwa-top-link" href="#" title="在 Obsidian 打开收藏库" hidden>
+            收藏库 ↗
+          </a>
+          <button type="button" class="sc-hud-close" id="sc-close-btn" aria-label="关闭展厅返回泡泡星图">
+            返回星图
+          </button>
+        </div>
+      </header>
+
+      <!-- 常驻文明/时代/国家 & 自然纪实分面栏（去表情符号，博物馆画册极简细线美学） -->
+      <nav class="sc-facet-bar" id="sc-facet-bar" aria-label="时空与自然分面导航">
+        <div class="sc-domain-switch" role="group" aria-label="切换漫游域">
+          <button type="button" class="sc-domain-btn active" id="sc-dom-museum" data-exp-domain="museum">
+            <svg class="ui-svg-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+              <path d="M2 6h12M3 13h10M4.5 6v7M8 6v7M11.5 6v7M8 2.5 2 6h12L8 2.5Z"></path>
+            </svg>
+            <span>馆藏年代</span>
+          </button>
+          <button type="button" class="sc-domain-btn" id="sc-dom-landscape" data-exp-domain="landscape">
+            <svg class="ui-svg-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+              <path d="m2 12.5 4.2-6 3.1 4.2 2.1-2.8L14 12.5H2Z"></path>
+              <circle cx="11.5" cy="4.5" r="1.3"></circle>
+            </svg>
+            <span>自然与微距</span>
+          </button>
+        </div>
+        <span class="sc-facet-divider" aria-hidden="true"></span>
+        <div class="sc-facet-pills" id="sc-facet-pills" role="tablist" aria-label="文明时代或自然摄影分面"></div>
+        <button type="button" class="sc-random-btn" id="sc-random-jump-btn" title="从当前分类再抽一批未看过的 4K 作品">
+          <span aria-hidden="true">↻</span> 换一批
+        </button>
+      </nav>
+
+      <!-- 模式 1：时代 / 国家 / 自然纪实 瀑布流滚动长卷（#sc-gallery-view） -->
+      <section class="sc-gallery-view" id="sc-gallery-view" hidden>
+        <div class="sc-gal-inner">
+          <header class="sc-gal-header">
+            <div class="sc-gal-head-main">
+              <span class="sc-gal-eyebrow" id="sc-gal-eyebrow">CURATED SCROLL STREAM</span>
+              <h2 class="sc-gal-title" id="sc-gal-title">唐宋风雅 · 书画秘色瓷</h2>
+            </div>
+            <p class="sc-gal-sub" id="sc-gal-sub">向下滚动浏览高清原片，点卡片右上角 ♡ 可收入画匣，点画面即入「图文并排 · Wiki」。</p>
+          </header>
+
+          <aside class="sc-curator-banner" id="sc-curator-banner" hidden>
+            <div class="sc-curator-meta" id="sc-curator-meta">CURATED BY FABLE</div>
+            <p class="sc-curator-note" id="sc-curator-note"></p>
+          </aside>
+
+          <div class="sc-gal-grid" id="sc-gal-grid"></div>
+
+          <div class="sc-gal-foot">
+            <button type="button" class="sc-gal-more-btn" id="sc-gal-more-btn">
+              ↻ 继续展开更多同代 4K 风物
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 模式 2：◫ 图文并排 · 左侧 4K 可缩放原图与胶片条 + 右侧完整维基百科全章与收藏库（#sc-split-view） -->
+      <section class="sc-split-view" id="sc-split-view">
+        <!-- 左栏：4K 暗房展台 + 滚轮缩放拖拽 + 精简图注 + 底部横向胶片快切 -->
+        <div class="sc-split-left" id="sc-split-left">
+          <div class="sc-split-stage" id="sc-split-canvas">
+            <img id="sc-split-img" fetchpriority="high" alt="" draggable="false">
+            <div class="sc-split-quote-card" id="sc-split-quote-card" hidden>
+              <span class="sc-sq-kicker" id="sc-sq-kicker">LITERARY FOLIO</span>
+              <blockquote class="sc-sq-quote" id="sc-sq-quote"></blockquote>
+              <div class="sc-sq-sub" id="sc-sq-sub"></div>
+            </div>
+
+            <div class="sc-split-tools">
+              <button type="button" class="sc-mini-tool" id="sc-split-fit-btn" title="切换铺满展台或完整画幅">⛶ 铺满展台</button>
+              <button type="button" class="sc-mini-tool" id="sc-split-reset-zoom" title="重置缩放比例（或双击画面）">1:1 复位</button>
+              <button type="button" class="sc-mini-tool" id="sc-split-to-full" title="切换到纯全屏 4K 模式">↗ 纯享全屏</button>
+              <a class="sc-mini-tool" id="sc-split-map-link" href="#" target="_blank" rel="noopener" hidden>地球坐标 ↗</a>
+            </div>
+          </div>
+
+          <div class="sc-split-caption" id="sc-split-caption">
+            <div class="sc-split-cap-main">
+              <h2 class="sc-split-title" id="sc-split-title"></h2>
+              <span class="sc-split-en" id="sc-split-en"></span>
+            </div>
+            <div class="sc-split-sub" id="sc-split-sub"></div>
+          </div>
+
+          <!-- 底部胶片缩略图快切条：点一下立刻换图并同步切换右侧 Wiki -->
+          <div class="sc-filmstrip" id="sc-split-strip" role="listbox" aria-label="同组风物胶片快速切换"></div>
+        </div>
+
+        <!-- 右栏：独立平滑滚动的维基词条实时搜索 + 导览小记 + 维基百科多章节全篇 + 顺藤摸瓜 + LWA 收藏库 -->
+        <div class="sc-split-right" id="sc-split-right">
+          <div class="dos-scroll-inner">
+            <form role="search" class="wiki-search-form wiki-search-form--dossier" id="dos-wiki-form" autocomplete="off">
+              <label class="sr-only" for="dos-wiki-input">在展厅内搜索维基百科词条</label>
+              <svg class="ui-svg-icon wiki-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+                <circle cx="7" cy="7" r="4.5"></circle>
+                <path d="m10.5 10.5 3.2 3.2"></path>
+              </svg>
+              <input type="search" id="dos-wiki-input" class="wiki-search-input" placeholder="检索任意维基百科词条（中 / 英皆可，回车直达）…" autocomplete="off" spellcheck="false">
+              <button type="submit" class="wiki-search-submit">检索 Wiki</button>
+              <div class="wiki-suggest-box" id="dos-wiki-suggest" role="listbox" aria-label="维基词条联想列表" hidden></div>
+            </form>
+
+            <section class="dos-lead" id="dos-lead"></section>
+
+            <div class="dos-wiki-toolbar">
+              <nav class="dos-trail" id="dos-trail" aria-label="阅读漫游轨迹" hidden></nav>
+              <button type="button" class="dos-random-inline" id="dos-random-wiki-btn" title="从关联脉络随机跳入下一个深度词条">
+                ↻ 随机顺藤摸瓜
+              </button>
+            </div>
+
+            <article class="dos-wiki-article" id="dos-wiki-article" aria-live="polite"></article>
+
+            <section class="dos-side-card">
+              <h3 class="dos-side-title">◇ 顺藤摸瓜 · 关联维基脉络</h3>
+              <p class="dos-side-sub">点选任意关联著作、人物、器物或流派，左侧保留画作，右侧直接深读全章</p>
+              <div class="dos-related-chips" id="dos-related-chips"></div>
+            </section>
+
+            <section class="dos-side-card" id="dos-lwa-card">
+              <div class="dos-side-head">
+                <h3 class="dos-side-title">◈ 收藏库 (LWA) 同脉络笔记</h3>
+                <a class="dos-side-ext" id="dos-ask-vault-link" href="#" hidden>问收藏 ↗</a>
+              </div>
+              <div class="dos-lwa-list" id="dos-lwa-list"></div>
+            </section>
+
+            <section class="dos-side-card">
+              <h3 class="dos-side-title">✦ 当前队列风物</h3>
+              <div class="dos-window-list" id="dos-window-list"></div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <!-- 模式 3：⛶ 真全屏 4K 沉浸画幅（#sc-stage-view，支持滚轮缩放、拖拽平移、底部胶片切换） -->
+      <section class="sc-stage-view" id="sc-stage-view" hidden>
+        <div class="sc-stage-backdrop" id="sc-stage-backdrop" aria-hidden="true"></div>
+
+        <div class="sc-stage-canvas" id="sc-stage-canvas">
+          <img id="sc-stage-img" fetchpriority="high" alt="" draggable="false">
+        </div>
+
+        <div class="sc-stage-quicktools">
+          <button type="button" class="sc-hud-btn fav-heart-btn" id="sc-stage-fav-btn" aria-label="收藏画作" aria-pressed="false" title="点心收入私藏画匣">
+            <span class="fav-heart-glyph" aria-hidden="true">♡</span> 收藏
+          </button>
+          <button type="button" class="sc-hud-btn" id="sc-fit-btn" title="切换铺满全屏或保留完整画幅">⛶ 铺满全屏</button>
+          <button type="button" class="sc-hud-btn" id="sc-caption-toggle" title="隐藏或显示左下角图注卡片">◇ 图注</button>
+          <button type="button" class="sc-hud-btn sc-hud-btn--dossier" id="sc-open-dossier-btn" title="切到左右图文并排边看原图边读 Wiki">
+            ◫ 并排读 Wiki
+          </button>
+        </div>
+
+        <aside class="sc-caption-card" id="sc-caption-card">
+          <div class="sc-cap-head">
+            <span class="sc-cap-tag" id="sc-cap-tag">MUSEUM 4K</span>
+            <a class="sc-map-link" id="sc-map-link" href="#" target="_blank" rel="noopener" hidden>地球坐标 ↗</a>
+          </div>
+          <h2 class="sc-cap-title" id="sc-cap-title"></h2>
+          <div class="sc-cap-sub" id="sc-cap-sub"></div>
+          <details class="sc-cap-details" id="sc-cap-details" open>
+            <summary class="sc-cap-summary">展开 / 折叠风物小记（滚轮可直接放大原图）</summary>
+            <p class="sc-cap-story" id="sc-cap-story"></p>
+            <div class="sc-cap-meta" id="sc-cap-meta"></div>
+          </details>
+        </aside>
+
+        <div class="sc-stage-strip-wrap">
+          <div class="sc-filmstrip sc-filmstrip--stage" id="sc-stage-strip" role="listbox" aria-label="全屏模式胶片快速切换"></div>
+        </div>
+      </section>
+    </div>
+  </div>
 
   <script src="./data.js"></script>
   <script src="./sprites.js"></script>

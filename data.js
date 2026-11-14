@@ -1,752 +1,1392 @@
 /**
- * 世界之窗 · 心绪泡泡 (World Window & Mood Bubbles) — 数据与配置层
+ * 世界之窗 · 漫游画册 (World Window & Curated Bubble Feed) — 数据、主题、字体与精选种子池
  *
- * 以后改自己的「世界之窗」或「心绪泡泡」内容时，只需要改这个文件里的 WORLD_DATA 即可，
- * 物理参数、着色器、展开状态机都在 renderer.js 里自动读取这里的节点树。
+ * 既支持本地 `node serve.js` 实时拉取博物馆 / Wikimedia 4K 开放馆藏并与 `feed-profile/` 双向同步，
+ * 也支持单文件离线打开时直接从内置精选 4K 种子池 + localStorage 完成换一窗、去重与频道调权。
  */
 (function () {
   'use strict';
 
-  window.WORLD_DATA = {
-    defaultLang: 'zh',
+  const THEMES = {
+    'celadon-mist': {
+      id: 'celadon-mist',
+      name: '晨露影青',
+      enName: 'Celadon Mist',
+      bgHex: '#f2f5f4',
+      silkBase: [242, 245, 244],
+      silkAmp: 0.56,
+      accent: '#4a6f6d',
+      accentSoft: 'rgba(74, 111, 109, 0.12)',
+      ink: '#172020',
+      subInk: '#4d5b5b',
+      footerBg: '#283838',
+      curtainBg: '#334847',
+      // 将原版高饱和球色向影青/香槟杏/冰盐蓝/雾紫方向柔化提亮
+      desat: 0.46,
+      lift: 0.34,
+      hueShiftDeg: 8,
+      tintRgb: [243, 248, 246],
+      lineColors: { 1: '#8ab5ad', 2: '#7fb3c2', 3: '#b99fc9', 4: '#d9ad8b', 5: '#8ab5ad', 6: '#b59ebe' }
+    },
+    'rice-paper': {
+      id: 'rice-paper',
+      name: '宣纸矿彩',
+      enName: 'Xuan Mineral',
+      bgHex: '#f5f1e9',
+      silkBase: [245, 241, 233],
+      silkAmp: 0.48,
+      accent: '#945343',
+      accentSoft: 'rgba(148, 83, 67, 0.12)',
+      ink: '#221c18',
+      subInk: '#5c5149',
+      footerBg: '#382c26',
+      curtainBg: '#4a3830',
+      desat: 0.48,
+      lift: 0.32,
+      hueShiftDeg: -6,
+      tintRgb: [250, 245, 235],
+      lineColors: { 1: '#cfa07e', 2: '#84aba2', 3: '#c7959d', 4: '#cfb07c', 5: '#c88d84', 6: '#a894b3' }
+    },
+    'mother-of-pearl': {
+      id: 'mother-of-pearl',
+      name: '珍珠母贝',
+      enName: 'Mother of Pearl',
+      bgHex: '#f4f3f7',
+      silkBase: [244, 243, 247],
+      silkAmp: 0.62,
+      accent: '#5f5878',
+      accentSoft: 'rgba(95, 88, 120, 0.12)',
+      ink: '#1a1824',
+      subInk: '#555168',
+      footerBg: '#2c2838',
+      curtainBg: '#39344a',
+      desat: 0.38,
+      lift: 0.42,
+      hueShiftDeg: 18,
+      tintRgb: [248, 246, 252],
+      lineColors: { 1: '#b8a9d1', 2: '#8ebbc9', 3: '#cfa4c2', 4: '#d8b6a4', 5: '#bfa8cf', 6: '#9fb4d4' }
+    },
+    'soft-classic': {
+      id: 'soft-classic',
+      name: '柔化原色',
+      enName: 'Softened Classic',
+      bgHex: '#f2f2f2',
+      silkBase: [242, 242, 242],
+      silkAmp: 0.65,
+      accent: '#b54956',
+      accentSoft: 'rgba(181, 73, 86, 0.12)',
+      ink: '#161616',
+      subInk: '#4e4e4e',
+      footerBg: '#3b2428',
+      curtainBg: '#522c33',
+      desat: 0.68,
+      lift: 0.24,
+      hueShiftDeg: 0,
+      tintRgb: [252, 250, 249],
+      lineColors: { 1: '#eba56a', 2: '#74cab9', 3: '#e08fc9', 4: '#eba56a', 5: '#ea8598', 6: '#df8ec7' }
+    }
+  };
 
-    // 顶部品牌与大标题（保持官网同款衬线+无衬线混排比例，零官网商标）
-    brand: {
-      mark: 'WINDOW·BUBBLE',
-      heroLines: ['WINDOW OF', 'FLOATING', 'WORLDS'],
-      heroSub: ['OBSERVATION', 'REVERIE', '& ARCHIVE'],
-      footerWatermark: ['WINDOW OF', 'FLOATING', 'WORLDS'],
-      copyright: '© WORLD WINDOW & MOOD BUBBLES ARCHIVE'
+  const FONT_PRESETS = {
+    'caslon-zhuque': {
+      id: 'caslon-zhuque',
+      name: '朱雀仿宋 · Caslon',
+      shortLabel: '朱雀仿宋',
+      desc: '雕版斜势清雅仿宋 + Libre Caslon',
+      sample: '山色空蒙雨亦奇 · Floating Worlds',
+      cssUrl: 'https://cdn.jsdelivr.net/npm/@chinese-fonts/zqfs@3.0.0/dist/ZhuqueFangsong-Regular/result.css',
+      enDisplay: '"Libre Caslon Display", "Zhuque Fangsong (technical preview)", "Noto Serif SC", Georgia, serif',
+      enSans: '"Libre Franklin", "Zhuque Fangsong (technical preview)", "Noto Sans SC", sans-serif',
+      zhBody: '"Zhuque Fangsong (technical preview)", "Noto Serif SC", "Songti SC", serif',
+      zhUi: '"Zhuque Fangsong (technical preview)", "Noto Sans SC", sans-serif',
+      zhBodyWeight: '400'
+    },
+    'bodoni-huiwen': {
+      id: 'bodoni-huiwen',
+      name: '汇文明朝 · Bodoni',
+      shortLabel: '汇文明朝',
+      desc: '旧画报铅字明朝体 + Bodoni Moda',
+      sample: '博物奇珍与远方山海 · Museum Curios',
+      cssUrl: 'https://cdn.jsdelivr.net/npm/@chinese-fonts/hwmct@3.0.0/dist/%E6%B1%87%E6%96%87%E6%98%8E%E6%9C%9D%E4%BD%93/result.css',
+      enDisplay: '"Bodoni Moda", "Huiwen-mincho", "Noto Serif SC", Georgia, serif',
+      enSans: '"Plus Jakarta Sans", "Huiwen-mincho", "Noto Sans SC", sans-serif',
+      zhBody: '"Huiwen-mincho", "Noto Serif SC", Georgia, serif',
+      zhUi: '"Huiwen-mincho", "Noto Sans SC", sans-serif',
+      zhBodyWeight: '400'
+    },
+    'classic-caslon': {
+      id: 'classic-caslon',
+      name: '思源极细宋 · Caslon',
+      shortLabel: '极细雅宋',
+      desc: '思源宋体 Light 纤细衬线 + Libre Caslon',
+      sample: '天青色等烟雨 · Celadon Horizon',
+      cssUrl: '',
+      enDisplay: '"Libre Caslon Display", "Noto Serif SC", Georgia, serif',
+      enSans: '"Libre Franklin", "Noto Sans SC", sans-serif',
+      zhBody: '"Noto Serif SC", "Songti SC", Georgia, serif',
+      zhUi: '"Noto Serif SC", "Noto Sans SC", sans-serif',
+      zhBodyWeight: '300'
+    },
+    'cormorant-wenkai': {
+      id: 'cormorant-wenkai',
+      name: '霞鹜细楷 · Cormorant',
+      shortLabel: '霞鹜细楷',
+      desc: '温润手写细楷 + Cormorant 古典斜体',
+      sample: '竹杖芒鞋轻胜马 · Poetic Scroll',
+      cssUrl: 'https://cdn.jsdelivr.net/npm/@chinese-fonts/lxgwwenkai@3.0.0/dist/LXGWWenKai-Light/result.css',
+      enDisplay: '"Cormorant Garamond", "LXGW WenKai Light", "Noto Serif SC", Georgia, serif',
+      enSans: '"Plus Jakarta Sans", "LXGW WenKai Light", sans-serif',
+      zhBody: '"LXGW WenKai Light", "STKaiti", "KaiTi", "Noto Serif SC", serif',
+      zhUi: '"LXGW WenKai Light", "Noto Sans SC", sans-serif',
+      zhBodyWeight: '300'
+    },
+    'instrument-oldsong': {
+      id: 'instrument-oldsong',
+      name: '京华老宋 · Instrument',
+      shortLabel: '京华老宋',
+      desc: '传统雕版老宋气韵 + Instrument 修长衬线',
+      sample: '星垂平野阔 · Deep Cosmos',
+      cssUrl: 'https://cdn.jsdelivr.net/npm/@chinese-fonts/jhlst@3.0.0/dist/%E4%BA%AC%E8%8F%AF%E8%80%81%E5%AE%8B%E4%BD%93v2_002/result.css',
+      enDisplay: '"Instrument Serif", "KingHwa_OldSong", "Noto Serif SC", Georgia, serif',
+      enSans: '"Libre Franklin", "KingHwa_OldSong", "Noto Sans SC", sans-serif',
+      zhBody: '"KingHwa_OldSong", "Noto Serif SC", Georgia, serif',
+      zhUi: '"KingHwa_OldSong", "Noto Sans SC", sans-serif',
+      zhBodyWeight: '400'
+    },
+    'playfair-bright': {
+      id: 'playfair-bright',
+      name: '文楷明体 · Playfair',
+      shortLabel: '文楷明体',
+      desc: '欧文衬线融合细楷 + Playfair 画册风',
+      sample: '浮生若梦为欢几何 · Editorial Art',
+      cssUrl: 'https://cdn.jsdelivr.net/npm/@chinese-fonts/lxgwwenkaibright@2.0.0/dist/LXGWBright-Light/result.css',
+      enDisplay: '"Playfair Display", "LXGW Bright Light", "Noto Serif SC", Georgia, serif',
+      enSans: '"Plus Jakarta Sans", "LXGW Bright Light", sans-serif',
+      zhBody: '"LXGW Bright Light", "Noto Serif SC", Georgia, serif',
+      zhUi: '"LXGW Bright Light", "Noto Sans SC", sans-serif',
+      zhBodyWeight: '300'
+    }
+  };
+
+  const OBSIDIAN_CATALOG_URL = '';
+  const OBSIDIAN_ASK_URL = '';
+
+  const MUSEUM_FACETS_UI = [
+    { id: 'all', label: '全部馆藏' },
+    { id: 'china-ancient', label: '商周秦汉' },
+    { id: 'china-tang-song', label: '唐宋风雅' },
+    { id: 'china-ming-qing', label: '明清器物' },
+    { id: 'egypt', label: '古埃及' },
+    { id: 'mesopotamia-persia', label: '两河波斯' },
+    { id: 'greco-roman', label: '希腊罗马' },
+    { id: 'japan-edo', label: '江户浮世绘' },
+    { id: 'south-asia', label: '南亚喜马拉雅' },
+    { id: 'renaissance', label: '文艺复兴' },
+    { id: 'baroque-dutch', label: '巴洛克与尼德兰' },
+    { id: 'impressionism', label: '印象派与现代' }
+  ];
+
+  const LANDSCAPE_FACETS_UI = [
+    { id: 'all', label: '全境总览' },
+    { id: 'natgeo-wildlife', label: '生灵纪实' },
+    { id: 'macro-world', label: '微距奇观' },
+    { id: 'forest-mist', label: '幽林飞瀑' },
+    { id: 'polar-fjord', label: '极地流光' },
+    { id: 'alpine-lake', label: '雪峰冰湖' },
+    { id: 'ocean-reef', label: '深海环礁' },
+    { id: 'desert-volcano', label: '天象熔岩' },
+    { id: 'bing-uhd', label: '地理遗产' },
+    { id: 'earthview', label: '轨道俯瞰' },
+    { id: 'deep-cosmos', label: '深空星云' }
+  ];
+
+  const DEFAULT_PREFERENCES = {
+    theme: 'celadon-mist',
+    fontPreset: 'caslon-zhuque',
+    seenMode: 'inspect', // 'inspect' | 'open' | 'off'
+    freeformNote:
+      '偏爱宋代影青瓷、古罗马虹彩玻璃、怀表与温润玉器；画作喜欢印象派水面光影、浮世绘与宋人云山小品；风景想要太空俯瞰地球、冰川、极光、高山湖泊与星云；书籍与神话想读完整有脉络的词条，比如博尔赫斯、卡尔维诺、枕草子、希腊神话或电影幕后，不要碎片鸡汤。',
+    channels: [
+      { id: 'antiques', slot: 1, title: '古董与奇珍', enTitle: ['CURIOS &', 'ANTIQUES'], sup: 'WINDOW 01', weight: 3, query: '宋瓷 影青 玻璃 玉器 青铜 珐琅' },
+      { id: 'paintings', slot: 2, title: '画作与光影', enTitle: ['FINE ART', '& LIGHT'], sup: 'WINDOW 02', weight: 3, query: '莫奈 睡莲 印象派 浮世绘 梵高 云山' },
+      { id: 'landscapes', slot: 3, title: '远方4K秘境', enTitle: ['HORIZON', 'EARTH 4K'], sup: 'WINDOW 03', weight: 3, query: '太空俯瞰 冰川 极光 峡湾 雪山湖泊 盐沼' },
+      { id: 'quotes', slot: 4, title: '书籍·漫游拾句', enTitle: ['BOOKS &', 'PASSAGES'], sup: 'WINDOW 04', weight: 3, query: '博尔赫斯 卡尔维诺 枕草子 佩索阿 庄子' },
+      { id: 'cosmos', slot: 5, title: '星云与博物', enTitle: ['COSMOS &', 'MINERALS'], sup: 'WINDOW 05', weight: 2, query: '星云 星系 韦伯望远镜 博物图谱' },
+      { id: 'stories', slot: 6, title: '神话·影音·哲思', enTitle: ['MYTH &', 'CINEMA'], sup: 'WINDOW 06', weight: 2, query: '希腊神话 库布里克 塔可夫斯基 思想实验 科学史' }
+    ]
+  };
+
+  // ==================== 真实 4K 开放馆藏 + 高品味文学/哲思/神话切片种子库 ====================
+  const CURATED_POOL = [
+    // ---------- 01 古董与奇珍 (antiques) ----------
+    {
+      id: 'cma-380118-qingbai',
+      channel: 'antiques',
+      kind: 'image',
+      title: '南宋 · 景德镇影青釉银扣盖碗一对',
+      shortTitle: '南宋影青<br>银扣盖碗',
+      subtitle: '12–13 世纪 · 克利夫兰艺术博物馆藏 (3400px 4K)',
+      thumbUrl: 'https://openaccess-cdn.clevelandart.org/2020.173/2020.173_web.jpg',
+      fullUrl: 'https://openaccess-cdn.clevelandart.org/2020.173/2020.173_print.jpg',
+      story: '宋人把这种介于青与白之间的薄胎瓷叫作「影青」——对着窗光看，胎体薄得几乎透出手指的影子，积釉处却像雨后初晴的一汪浅湖水。窑工特意用松柴烧造以阻绝氧化，出窑后再在口沿镶上一圈纤细的银扣，八百年前的茶席审美清冷得没有一丝火气。',
+      meta: ['南宋 · 1100s–1200s', '青白釉镶银口', 'Cleveland Museum of Art CC0'],
+      tags: ['宋瓷', '影青', '青瓷', '茶器', 'qingbai', 'celadon'],
+      palette: ['#82b2ad', '#eef6f5', '#d5dfd9']
+    },
+    {
+      id: 'cma-695985-goryeo-celadon',
+      channel: 'antiques',
+      kind: 'image',
+      title: '高丽翡色青瓷暗花莲瓣碗',
+      shortTitle: '高丽翡色<br>青瓷莲碗',
+      subtitle: '13 世纪 · 高丽王朝 · 克利夫兰艺术博物馆 (3400×2477)',
+      thumbUrl: 'https://openaccess-cdn.clevelandart.org/2025.179/2025.179_web.jpg',
+      fullUrl: 'https://openaccess-cdn.clevelandart.org/2025.179/2025.179_print.jpg',
+      story: '北宋徐兢出使高丽时，在《宣和奉使高丽图经》里惊叹当地秘色瓷「色泽温润如美玉」。放大到 4K 看碗壁，整片灰青色玻璃质釉层下布满了细如蝉翼的天然冰裂开片，底下隐约浮出手工剔刻的莲瓣暗纹。',
+      meta: ['13 世纪 · 高丽王朝', '秘色青瓷 · 冰裂开片', '3400×2477 4K 原片'],
+      tags: ['青瓷', '冰裂纹', '高丽', '宋瓷', 'celadon'],
+      palette: ['#78a69a', '#ecf4f1', '#c7d8d0']
+    },
+    {
+      id: 'cma-370537-iridescent-vase',
+      channel: 'antiques',
+      kind: 'image',
+      title: '蒂芙尼风格虹彩吹制玻璃天南星花瓶',
+      shortTitle: '虹彩吹制<br>琉璃花器',
+      subtitle: '约 1900–1920 · 新艺术运动时期 (2585×3400 4K)',
+      thumbUrl: 'https://openaccess-cdn.clevelandart.org/2019.244/2019.244_web.jpg',
+      fullUrl: 'https://openaccess-cdn.clevelandart.org/2019.244/2019.244_print.jpg',
+      story: '十九世纪末的玻璃匠人迷上了古罗马出土玻璃表面的银蓝色包浆——那是玻璃埋在湿润泥土里两千年后自然风化出的薄膜干涉虹彩。于是他们在炽热软化的玻璃表面喷上金属盐蒸汽，把孔雀羽、肥皂泡和晨露的折光永远冻在了这朵舒展的喇叭形花口上。',
+      meta: ['c. 1900–1920', '虹彩吹制玻璃', '2585×3400 4K 原片'],
+      tags: ['玻璃', '虹彩', '新艺术', '琉璃', 'glass'],
+      palette: ['#6fa3b8', '#ebf4f8', '#dfbe99']
+    },
+    {
+      id: 'cma-144577-northern-celadon',
+      channel: 'antiques',
+      kind: 'image',
+      title: '北宋 · 耀州窑刻花缠枝牡丹青瓷碗',
+      shortTitle: '北宋耀州<br>刻花青瓷',
+      subtitle: '12 世纪 · 北方青瓷 · 克利夫兰艺术博物馆 (4K)',
+      thumbUrl: 'https://openaccess-cdn.clevelandart.org/1969.226/1969.226_web.jpg',
+      fullUrl: 'https://openaccess-cdn.clevelandart.org/1969.226/1969.226_print.jpg',
+      story: '北方耀州窑最绝的手艺叫「刀刀见泥」：匠人趁坯体半干时斜执竹刀飞快旋刻，深处积聚厚厚的橄榄绿玻璃釉，浅处露出淡青亮脊，一深一浅之间，整朵牡丹就像浮在水波底下一样立体。',
+      meta: ['北宋 · 1100s', '耀州窑刻花青釉', 'Cleveland Museum of Art CC0'],
+      tags: ['宋瓷', '青瓷', '耀州窑', 'celadon', 'porcelain'],
+      palette: ['#849c78', '#eff4ec', '#d4cca8']
+    },
+    {
+      id: 'cma-93173-poppy-inkwell',
+      channel: 'antiques',
+      kind: 'image',
+      title: '百年书桌上的虞美人雕花黄铜玻璃墨水台',
+      shortTitle: '虞美人花<br>古董墨水台',
+      subtitle: '约 1898–1906 · 蒂芙尼工坊 · 纽约 (3400×2601 4K)',
+      thumbUrl: 'https://openaccess-cdn.clevelandart.org/2018.289/2018.289_web.jpg',
+      fullUrl: 'https://openaccess-cdn.clevelandart.org/2018.289/2018.289_print.jpg',
+      story: '在钢笔还没普及的年代，写信是一件很有仪式感的事：掀开镂空黄铜铸造的虞美人花苞盖子，底下衬着乳青色半透明花纹玻璃。哪怕一百年过去，依然能想象深夜台灯下蘸水笔尖轻碰瓶口那声清脆的轻响。',
+      meta: ['c. 1898–1906', '镂空黄铜与压花玻璃', '3400×2601 4K 原片'],
+      tags: ['文房', '玻璃', '铜器', '新艺术', '古董'],
+      palette: ['#8c9e82', '#f2f5ef', '#d4a87e']
+    },
+    {
+      id: 'cma-97491-comma-jade',
+      channel: 'antiques',
+      kind: 'image',
+      title: '公元五世纪 · 翠绿硬玉勾玉坠饰',
+      shortTitle: '五世纪<br>翠色勾玉',
+      subtitle: '公元 400 年代 · 三国时代 · 3400×3137 4K 微距',
+      thumbUrl: 'https://openaccess-cdn.clevelandart.org/1917.1057/1917.1057_web.jpg',
+      fullUrl: 'https://openaccess-cdn.clevelandart.org/1917.1057/1917.1057_print.jpg',
+      story: '一千六百年前没有金属高速钻头，工匠纯粹靠石英砂沾水一点点研磨穿孔，把一块带天然云絮纹理的翠色硬玉磨得像刚凝结的春水豆荚。放大到 4K 能清晰看见玉石内部散开的白色云根与温润包浆。',
+      meta: ['公元 5 世纪', '天然硬玉微距', '3400×3137 4K 原片'],
+      tags: ['玉器', '古玉', '翡翠', 'jade'],
+      palette: ['#6ca88c', '#eaf5f0', '#c8dfd3']
+    },
+    {
+      id: 'cma-142716-stained-window',
+      channel: 'antiques',
+      kind: 'image',
+      title: '光穿过的花园 · 1900 年乳白彩绘玻璃花窗',
+      shortTitle: '百年彩绘<br>琉璃花窗',
+      subtitle: '约 1900 · 纽约老宅旧藏 (1717×3400 4K)',
+      thumbUrl: 'https://openaccess-cdn.clevelandart.org/1966.432/1966.432_web.jpg',
+      fullUrl: 'https://openaccess-cdn.clevelandart.org/1966.432/1966.432_print.jpg',
+      story: '不用一滴颜料上色，全靠在熔融玻璃里混入不同深浅的钴蓝、琥珀与乳白氧化物，趁热拉出天然云霞纹再一片片嵌进铅条里。每当室外云层飘过，整扇窗自己就会呼吸明暗。',
+      meta: ['c. 1900', '乳光彩色玻璃窗', '1717×3400 4K 原片'],
+      tags: ['玻璃', '花窗', '琉璃', '古董', 'glass'],
+      palette: ['#7a9ab8', '#eef3f8', '#e3c099']
+    },
+    {
+      id: 'cma-111801-celadon-winepot',
+      channel: 'antiques',
+      kind: 'image',
+      title: '宋元之际 · 龙泉青瓷瓜棱执壶',
+      shortTitle: '龙泉青瓷<br>瓜棱执壶',
+      subtitle: '13–14 世纪 · 龙泉窑粉青釉 (3400px 4K)',
+      thumbUrl: 'https://openaccess-cdn.clevelandart.org/1930.325/1930.325_web.jpg',
+      fullUrl: 'https://openaccess-cdn.clevelandart.org/1930.325/1930.325_print.jpg',
+      story: '饱满圆润的瓜棱壶腹配上一弯修长流口，粉青厚釉在棱线处微微泛白，在凹槽里积成柔和的湖绿色——这是龙泉窑最迷人的「出筋」效果，不靠繁复彩绘，单凭光线在起伏釉面上的厚薄折射就足够耐看。',
+      meta: ['13–14 世纪', '龙泉窑粉青釉', 'Cleveland Museum of Art CC0'],
+      tags: ['宋瓷', '龙泉窑', '青瓷', 'celadon', 'porcelain'],
+      palette: ['#7db0a0', '#ebf5f2', '#cddfd8']
     },
 
-    // 界面通用文案（支持右上角 ZH / EN 一键切换）
+    // ---------- 02 画作与光影 (paintings) ----------
+    {
+      id: 'cma-136510-monet-agapanthus',
+      channel: 'paintings',
+      kind: 'image',
+      title: '莫奈 · 《睡莲与百子莲》晨光长卷',
+      shortTitle: '莫奈睡莲<br>水光长卷',
+      subtitle: 'Claude Monet · c. 1915–1926 · 吉维尼花园 (3400×1581 4K)',
+      thumbUrl: 'https://openaccess-cdn.clevelandart.org/1960.81/1960.81_web.jpg',
+      fullUrl: 'https://openaccess-cdn.clevelandart.org/1960.81/1960.81_print.jpg',
+      story: '晚年莫奈在吉维尼水塘边画下这幅超过四米宽的巨作时，完全省去了岸边与地平线——整张画布只有低头看见的水面：紫蓝色的云影沉在水底，几朵淡粉白睡莲浮在波光上面，你分不清眼睛看到的是深水还是倒映的天空。',
+      meta: ['Claude Monet, c. 1915–26', '布面油画 · 425 cm 巨幅长卷', '3400×1581 4K 原片'],
+      tags: ['莫奈', '睡莲', '印象派', 'Monet', 'impressionism'],
+      palette: ['#7b93c4', '#eef1fa', '#d8a6c4']
+    },
+    {
+      id: 'cma-136950-malin-clouds',
+      channel: 'paintings',
+      kind: 'image',
+      title: '南宋马麟 · 《坐看云起图》纨扇页',
+      shortTitle: '南宋马麟<br>坐看云起',
+      subtitle: '1256 年 · 宋理宗御题王维诗 · 绢本水墨设色 (3400×2821 4K)',
+      thumbUrl: 'https://openaccess-cdn.clevelandart.org/1961.421.1/1961.421.1_web.jpg',
+      fullUrl: 'https://openaccess-cdn.clevelandart.org/1961.421.1/1961.421_print.jpg',
+      story: '七百七十年前的一把团扇：溪边山石上敞胸闲坐的文人连鞋都懒得穿好，仰头看着峡谷尽头一团刚从水汽里蒸腾起来的白云——恰好是王维那句「行到水穷处，坐看云起时」最松弛的宋代实景切片。放大到 4K 连南宋双丝细绢的经纬都清晰可数。',
+      meta: ['马麟 · 南宋宝祐四年 (1256)', '绢本团扇 · 3400×2821 4K', 'Cleveland Museum of Art CC0'],
+      tags: ['宋画', '云山', '马麟', '王维', '山水'],
+      palette: ['#a99c82', '#f6f2ea', '#899b96']
+    },
+    {
+      id: 'aic-14620-monet-pourville',
+      channel: 'paintings',
+      kind: 'image',
+      title: '莫奈 · 《普维尔悬崖海风散步》',
+      shortTitle: '普维尔崖顶<br>海风散步',
+      subtitle: 'Claude Monet · 1882 · 芝加哥艺术博物馆藏 (IIIF 高清)',
+      thumbUrl: 'https://www.artic.edu/iiif/2/b0effb1c-ff23-bbaa-f809-9fd94e31c1a0/full/843,/0/default.jpg',
+      fullUrl: 'https://www.artic.edu/iiif/2/b0effb1c-ff23-bbaa-f809-9fd94e31c1a0/full/1686,/0/default.jpg',
+      story: '1882 年夏天诺曼底海岸的晴风几乎要从画框里吹出来：草甸上的野花、海面跳跃的碎白浪、远处倾斜的白帆和女士被吹起的纱巾全用同一套短促轻快的笔触写成。整幅画连一处沉闷的阴影都没有，全是咸湿明亮的夏天。',
+      meta: ['Claude Monet · 1882', '诺曼底海岸写生', 'Art Institute of Chicago CC0'],
+      tags: ['莫奈', '海岸', '印象派', 'Monet', 'impressionism'],
+      palette: ['#6ca4c4', '#ecf5fa', '#e5a99e']
+    },
+    {
+      id: 'aic-16564-monet-seine-mist',
+      channel: 'paintings',
+      kind: 'image',
+      title: '莫奈 · 《吉维尼塞纳河畔的晨雾》',
+      shortTitle: '塞纳河畔<br>粉紫晨雾',
+      subtitle: 'Claude Monet · 1897 · 清晨五点半的水面显影',
+      thumbUrl: 'https://www.artic.edu/iiif/2/838d8c33-a3b4-68ea-587b-87ceec2011af/full/843,/0/default.jpg',
+      fullUrl: 'https://www.artic.edu/iiif/2/838d8c33-a3b4-68ea-587b-87ceec2011af/full/1686,/0/default.jpg',
+      story: '莫奈那年夏天每天凌晨三点半起床，撑着装满十几块画布的小船停在塞纳河支流中央，只为抓天刚蒙蒙亮那二十分钟——雾气还没散尽，树影和水面全融在淡丁香紫、冰青与珍珠粉的薄纱里，静得连桨声都不忍心惊动。',
+      meta: ['Claude Monet · 1897', '晨雾系列 · 布面油画', 'Art Institute of Chicago CC0'],
+      tags: ['莫奈', '晨雾', '印象派', 'Monet'],
+      palette: ['#9aa6c9', '#f1f3fa', '#d8b4c8']
+    },
+    {
+      id: 'aic-27992-seurat-grande-jatte',
+      channel: 'paintings',
+      kind: 'image',
+      title: '修拉 · 《大碗岛的星期天下午》点彩光谱',
+      shortTitle: '大碗岛的<br>周日午后',
+      subtitle: 'Georges Seurat · 1884–1886 · 芝加哥艺术博物馆镇馆之作',
+      thumbUrl: 'https://www.artic.edu/iiif/2/2d484387-2509-5e8e-2c43-22f9981972eb/full/843,/0/default.jpg',
+      fullUrl: 'https://www.artic.edu/iiif/2/2d484387-2509-5e8e-2c43-22f9981972eb/full/1686,/0/default.jpg',
+      story: '修拉把光学论文搬上了画布：他不在调色盘上把蓝和黄混成绿色，而是用成千上万颗纯粹的小色点并排点在画布上，退后三步由你的视网膜自己去合成发光的草地。放大滚轮细看，连树荫里都藏着橘粉与群青的跳跃像素。',
+      meta: ['Georges Seurat · 1884–86', '光学点彩派代表作', 'Art Institute of Chicago CC0'],
+      tags: ['修拉', '点彩', '印象派', '光影'],
+      palette: ['#7fa886', '#eff6f0', '#d9a482']
+    },
+    {
+      id: 'aic-109314-vangogh-spring',
+      channel: 'paintings',
+      kind: 'image',
+      title: '梵高 · 《克利希桥畔的春日垂钓》',
+      shortTitle: '梵高春日<br>河岸垂钓',
+      subtitle: 'Vincent van Gogh · 1887 · 巴黎时期最明快的一抹薄荷绿',
+      thumbUrl: 'https://www.artic.edu/iiif/2/5512cee9-6d00-d01b-b0be-ac7843cc8f76/full/843,/0/default.jpg',
+      fullUrl: 'https://www.artic.edu/iiif/2/5512cee9-6d00-d01b-b0be-ac7843cc8f76/full/1686,/0/default.jpg',
+      story: '很少见到这么轻盈舒展的梵高：刚到巴黎接触印象派与日本浮世绘那年春天，他脱掉了早期暗沉的土褐色，用清透的柠檬黄、薄荷绿与水蓝色短横笔触画下塞纳河边安静钓鱼的小船，整幅画都在春风里轻轻摇晃。',
+      meta: ['Vincent van Gogh · 1887', '布面油画 · 巴黎时期', 'Art Institute of Chicago CC0'],
+      tags: ['梵高', '印象派', '春天', 'Van Gogh'],
+      palette: ['#7cb89d', '#edf7f2', '#e8ca7e']
+    },
+    {
+      id: 'cma-115050-twachtman-clouds',
+      channel: 'paintings',
+      kind: 'image',
+      title: '特瓦奇曼 · 《低垂的雨云与银色水面》',
+      shortTitle: '银灰雨云<br>低垂水面',
+      subtitle: 'John Henry Twachtman · 1880 · 3400×2050 4K',
+      thumbUrl: 'https://openaccess-cdn.clevelandart.org/1935.217/1935.217_web.jpg',
+      fullUrl: 'https://openaccess-cdn.clevelandart.org/1935.217/1935.217_print.jpg',
+      story: '整张画面八成留给了刚吸饱水汽、正缓缓压向河湾的灰蓝色云层，只在天际裂口处漏出一线温润的珍珠白，像极了阵雨落下前三分钟空气里微凉的气息。',
+      meta: ['John Henry Twachtman · 1880', '3400×2050 4K 原片', 'Cleveland Museum of Art CC0'],
+      tags: ['风景画', '云层', '水岸', '光影'],
+      palette: ['#7b8fa3', '#edf1f5', '#c9bfb0']
+    },
+    {
+      id: 'aic-28560-vangogh-bedroom',
+      channel: 'paintings',
+      kind: 'image',
+      title: '梵高 · 《阿尔勒的黄色小屋卧室》',
+      shortTitle: '阿尔勒的<br>淡蓝卧室',
+      subtitle: 'Vincent van Gogh · 1889 · 他写信说这幅画只关于「绝对的休息」',
+      thumbUrl: 'https://www.artic.edu/iiif/2/6644829f-f292-c5c4-a73c-0356a6fdbf0d/full/843,/0/default.jpg',
+      fullUrl: 'https://www.artic.edu/iiif/2/6644829f-f292-c5c4-a73c-0356a6fdbf0d/full/1686,/0/default.jpg',
+      story: '梵高在给弟弟提奥的信里特意交代：淡紫蓝色的墙、柠檬黄木床、浅绿窗框——所有家具都成双成对（两把椅子、两只枕头、两幅墙画），画面故意省略阴影，像日本木版画一样平涂，只为了让看画的人眼睛和大脑都彻底歇下来。',
+      meta: ['Vincent van Gogh · 1889', '布面油画 · 芝加哥藏第二版', 'Art Institute of Chicago CC0'],
+      tags: ['梵高', '浮世绘', '色彩', 'Van Gogh'],
+      palette: ['#7ea0c9', '#edf3fa', '#ebca78']
+    },
+
+    // ---------- 03 远方4K地貌 (landscapes) ----------
+    {
+      id: 'wiki-143032322-myvatn-aurora',
+      channel: 'landscapes',
+      kind: 'image',
+      title: '冰岛米湖上空折叠的翡翠极光倒影',
+      shortTitle: '冰岛米湖<br>极光镜面',
+      subtitle: 'Mývatn, Iceland · Wikimedia 年度精选摄影 (6837×4560 超清)',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/9/99/039_Northern_lights_over_M%C3%BDvatn_%28Iceland%29_Photo_by_Giles_Laurent.jpg/960px-039_Northern_lights_over_M%C3%BDvatn_%28Iceland%29_Photo_by_Giles_Laurent.jpg',
+      fullUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/9/99/039_Northern_lights_over_M%C3%BDvatn_%28Iceland%29_Photo_by_Giles_Laurent.jpg/2560px-039_Northern_lights_over_M%C3%BDvatn_%28Iceland%29_Photo_by_Giles_Laurent.jpg',
+      story: '距离地表一百公里的高空大气里，太阳风电子撞击氧原子激发出 557.7 纳米的翠绿光带，刚好遇上冰岛北部米湖无风结冰前的静水夜，整条发光的丝绸在湖面上上下对称铺开。',
+      meta: ['冰岛米湖 · Giles Laurent 摄', 'Wikimedia Featured Picture', '4K 超清无损缩略流'],
+      tags: ['极光', '冰岛', '湖泊', 'aurora', 'iceland'],
+      palette: ['#5ea898', '#eaf6f3', '#7f8cc4']
+    },
+    {
+      id: 'wiki-8472717-upsala-glacier',
+      channel: 'landscapes',
+      kind: 'image',
+      title: '巴塔哥尼亚乌普萨拉冰川的冰蓝裂隙',
+      shortTitle: '巴塔哥尼亚<br>乌普萨拉冰川',
+      subtitle: '南美安第斯冰原 · 4288×2848 4K 航拍实景',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/2/2e/Upsala_Glacier%2C_Argentina.jpg/960px-Upsala_Glacier%2C_Argentina.jpg',
+      fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/2/2e/Upsala_Glacier%2C_Argentina.jpg',
+      story: '为什么万年冰川深处是孔雀蓝而不是白色的？因为积雪被自身重量挤压数百年后排空了所有微小气泡，致密的冰晶吸收了阳光里的红橙长波，只把最清澈的短波蓝光散射回你的眼睛里。',
+      meta: ['阿根廷洛斯格拉西亚雷斯', '4288×2848 4K 原片', 'Wikimedia Featured Picture'],
+      tags: ['冰川', '雪山', '南美', 'glacier'],
+      palette: ['#6da8c9', '#eaf4fa', '#bfd8e6']
+    },
+    {
+      id: 'wiki-124751480-gokyo-lake',
+      channel: 'landscapes',
+      kind: 'image',
+      title: '海拔 4750 米 · 喜马拉雅戈基奥冰川绿松石湖',
+      shortTitle: '喜马拉雅<br>绿松石冰湖',
+      subtitle: 'Gokyo Lake, Nepal · 4027×2685 4K 精选地貌',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/7/7b/Gokyo_Ri_summit%2C_Gokyo_Lake%2C_Nepal%2C_Himalayas.jpg/960px-Gokyo_Ri_summit%2C_Gokyo_Lake%2C_Nepal%2C_Himalayas.jpg',
+      fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/7/7b/Gokyo_Ri_summit%2C_Gokyo_Lake%2C_Nepal%2C_Himalayas.jpg',
+      story: '世界上海拔最高的淡水湖系之一。冰川研磨岩石产生的极细微「冰川岩粉」常年悬浮在融雪水体中，让湖面在正午高海拔阳光下呈现出仿佛上过宋代松石釉般的乳青色。',
+      meta: ['尼泊尔 · 海拔 4,750m', '4027×2685 4K 原片', 'Wikimedia Featured Picture'],
+      tags: ['雪山', '湖泊', '冰川', '喜马拉雅', 'mountain'],
+      palette: ['#5fa2ad', '#e9f5f7', '#cbbca8']
+    },
+    {
+      id: 'wiki-154986747-zagedan-cirque',
+      channel: 'landscapes',
+      kind: 'image',
+      title: '高加索山脉扎格丹冰斗湖的夏末晨光',
+      shortTitle: '高加索山<br>冰斗双湖',
+      subtitle: 'Zagedan Lakes, Caucasus · 4912×3264 4K',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/8/88/Zagedan_Lakes%2C_Mountain_cirque%2C_Caucasus_Mountains.jpg/960px-Zagedan_Lakes%2C_Mountain_cirque%2C_Caucasus_Mountains.jpg',
+      fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/8/88/Zagedan_Lakes%2C_Mountain_cirque%2C_Caucasus_Mountains.jpg',
+      story: '古冰川退却后在山脊高处挖出的天然石碗，盛着两汪清澈见底的融雪水。八月末高山草甸刚染上一层浅金与苔绿，风还没起，整座山峰像印在玻璃上一样清晰。',
+      meta: ['高加索山脉冰斗湖', '4912×3264 4K 原片', 'Wikimedia Featured Picture'],
+      tags: ['高山湖泊', '草甸', '雪山', 'lake', 'mountain'],
+      palette: ['#6ca094', '#edf6f4', '#d8c596']
+    },
+    {
+      id: 'wiki-148263164-magenta-aurora',
+      channel: 'landscapes',
+      kind: 'image',
+      title: '罕见 G5 级地磁暴下的品红与浅紫极光穹顶',
+      shortTitle: '北欧海湾<br>品红极光夜',
+      subtitle: '瑞典西海岸 Lysekil · 5184×3456 4K 实拍',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/e/e3/Magenta_G5_aurora_over_Tuntorp%2C_Lysekil_Municipality_11.jpg/960px-Magenta_G5_aurora_over_Tuntorp%2C_Lysekil_Municipality_11.jpg',
+      fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/e/e3/Magenta_G5_aurora_over_Tuntorp%2C_Lysekil_Municipality_11.jpg',
+      story: '平时极光多为绿色，只有当强烈太阳风暴把高能粒子一路推入低空氮分子层时，蓝光与高空氧原子的红光才会混合出这种如梦似幻的洋红、丁香紫与珊瑚粉光柱——跟世界之窗丝绸背景里的棱镜光谱几乎同源。',
+      meta: ['瑞典 Lysekil · G5 极光夜', '5184×3456 4K 原片', 'Wikimedia Featured Picture'],
+      tags: ['极光', '北欧', '星空', 'aurora'],
+      palette: ['#b580ba', '#f6eef7', '#7aa4c4']
+    },
+    {
+      id: 'wiki-51789190-svalbard-glacier',
+      channel: 'landscapes',
+      kind: 'image',
+      title: '北纬七十八度 · 斯瓦尔巴群岛入海冰墙崩解瞬间',
+      shortTitle: '北极斯瓦尔巴<br>入海冰墙',
+      subtitle: 'Svitjordbreen, Svalbard · 4969×2795 4K',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/e/e2/Svitjordbreen_on_Svalbard_calving.jpg/960px-Svitjordbreen_on_Svalbard_calving.jpg',
+      fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/e/e2/Svitjordbreen_on_Svalbard_calving.jpg',
+      story: '北极圈深处的冰舌缓缓推入深海峡湾，几十米高的淡青色冰壁在寂静中剥落入海，激起一圈乳白色水雾，封存了上万年的古大气气泡在海水里咝咝释放出来。',
+      meta: ['北极斯瓦尔巴群岛', '4969×2795 4K 原片', 'Wikimedia Featured Picture'],
+      tags: ['北极', '冰川', '峡湾', '海岸', 'glacier', 'fjord'],
+      palette: ['#729eb5', '#ecf4f8', '#cbdbe3']
+    },
+    {
+      id: 'wiki-915077-jokulsarlon',
+      channel: 'landscapes',
+      kind: 'image',
+      title: '冰岛杰古沙龙冰河湖 · 漂向大海的浮冰雕塑',
+      shortTitle: '冰岛冰河湖<br>漂流蓝冰',
+      subtitle: 'Jökulsárlón, Iceland · 2921×1931 高清摄影',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a5/Jokulsarlon_lake%2C_Iceland.jpg/960px-Jokulsarlon_lake%2C_Iceland.jpg',
+      fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/a/a5/Jokulsarlon_lake%2C_Iceland.jpg',
+      story: '瓦特纳冰原脱落的巨大浮冰在这片安静的潟湖里慢慢融化、翻转，每一块都被水和风雕成独一无二的半透明形状，最后顺着水道漂进黑沙滩外的大西洋。',
+      meta: ['冰岛东南岸 · Jökulsárlón', '2921×1931 原片', 'Wikimedia Featured Picture'],
+      tags: ['冰岛', '浮冰', '海岸', '湖泊', 'iceland'],
+      palette: ['#6e9cb8', '#edf4f9', '#b8cdd9']
+    },
+    {
+      id: 'wiki-99193060-sofia-massif',
+      channel: 'landscapes',
+      kind: 'image',
+      title: '云端雪线与翠谷 · 索菲亚冰川山峰全景',
+      shortTitle: '雪线飞瀑与<br>高山翠谷',
+      subtitle: 'Sofia Glacier, Caucasus · 4912×2760 4K 宽幅',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/1/16/Sofia_Massif_and_Sofia_Glacier%2C_Karachay-Cherkessia%2C_Caucasus_Mountains.jpg/960px-Sofia_Massif_and_Sofia_Glacier%2C_Karachay-Cherkessia%2C_Caucasus_Mountains.jpg',
+      fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/1/16/Sofia_Massif_and_Sofia_Glacier%2C_Karachay-Cherkessia%2C_Caucasus_Mountains.jpg',
+      story: '上半截是终年不化的银白悬冰川与灰蓝花岗岩刃脊，下半截十几道细长的融雪飞瀑垂直跌进松林和野花盛开的翠绿河谷，像一幅把冬天和盛夏叠在同一帧里的宽银幕。',
+      meta: ['索菲亚山脉 · 4912×2760 4K', 'Wikimedia Featured Picture', '双季同框地貌'],
+      tags: ['雪山', '瀑布', '冰川', '山谷', 'mountain'],
+      palette: ['#739e8c', '#eef6f2', '#9fb8cc']
+    },
+    {
+      id: 'ev-1820',
+      channel: 'landscapes',
+      kind: 'image',
+      facet: 'earthview',
+      title: '太空俯瞰 · 冰岛南岸瓦特纳冰川辫状河网',
+      shortTitle: '太空俯瞰<br>冰岛辫状河',
+      subtitle: 'Google Earth View 卫星 4K · Southern Iceland (63.75°N, 17.50°W)',
+      thumbUrl: 'https://www.gstatic.com/prettyearth/assets/full/1820.jpg',
+      fullUrl: 'https://www.gstatic.com/prettyearth/assets/full/1820.jpg',
+      mapUrl: 'https://www.google.com/maps/@63.749262,-17.503828,15z/data=!3m1!1e3',
+      country: '冰岛',
+      wikiTitle: '瓦特纳冰原',
+      relatedSeeds: ['瓦特纳冰原', '辫状河流', '冰岛地理', '冰川融水'],
+      story: '从近地轨道垂直俯视冰岛南岸火山黑砂平原：富含火山灰与玄武岩矿粉的冰川融水在大地上分叉交织成银蓝色与乳青色的树根状水网，像极了一幅自己会流动的宋代矿彩长卷。',
+      meta: ['冰岛南岸 · 卫星遥感', 'Google Earth View 4K', '63.75°N 地球坐标'],
+      tags: ['太空俯瞰', '冰岛', '冰川', 'earthview'],
+      palette: ['#6ea8b8', '#ecf5f8', '#9ec4b5']
+    },
+    {
+      id: 'ev-1027',
+      channel: 'landscapes',
+      kind: 'image',
+      facet: 'earthview',
+      title: '太空俯瞰 · 巴哈马伊柳塞拉岛海底翡翠潮汐沙洲',
+      shortTitle: '太空俯瞰<br>巴哈马潮汐海',
+      subtitle: 'Google Earth View 卫星 4K · South Eleuthera, Bahamas',
+      thumbUrl: 'https://www.gstatic.com/prettyearth/assets/full/1027.jpg',
+      fullUrl: 'https://www.gstatic.com/prettyearth/assets/full/1027.jpg',
+      mapUrl: 'https://www.google.com/maps/@24.936413,-76.333179,14z/data=!3m1!1e3',
+      country: '巴哈马',
+      wikiTitle: '大巴哈马浅滩',
+      relatedSeeds: ['巴哈马', '伊柳塞拉岛', '珊瑚礁', '鲕粒灰岩'],
+      story: '大西洋洋流每天两次冲刷大巴哈马浅滩洁白的钙质珊瑚砂，在水下几米深处雕出羽毛般的翡翠与孔雀蓝潮汐水道。连阿波罗宇航员当年在轨道上都说，全地球最好认的颜色就是巴哈马这抹荧光浅蓝。',
+      meta: ['巴哈马 · 珊瑚浅滩', 'Google Earth View 4K', '24.94°N 地球坐标'],
+      tags: ['太空俯瞰', '海岸', '珊瑚礁', 'earthview'],
+      palette: ['#5db5be', '#e9f7f8', '#bce3df']
+    },
+    {
+      id: 'ev-5945',
+      channel: 'landscapes',
+      kind: 'image',
+      facet: 'earthview',
+      title: '太空俯瞰 · 玻利维亚安第斯高原盐沼矿脉纹理',
+      shortTitle: '太空俯瞰<br>安第斯盐沼',
+      subtitle: 'Google Earth View 卫星 4K · Daniel Campos, Bolivia',
+      thumbUrl: 'https://www.gstatic.com/prettyearth/assets/full/5945.jpg',
+      fullUrl: 'https://www.gstatic.com/prettyearth/assets/full/5945.jpg',
+      mapUrl: 'https://www.google.com/maps/@-19.863042,-67.193161,14z/data=!3m1!1e3',
+      country: '玻利维亚',
+      wikiTitle: '乌尤尼盐沼',
+      relatedSeeds: ['乌尤尼盐沼', '阿尔蒂普拉诺高原', '安第斯山脉', '盐湖'],
+      story: '海拔三千六百米的玻利维亚高原古内陆海干涸后，留下数万平方公里的纯白锂盐壳与火山碎屑冲积扇，在稀薄洁净的高原阳光下显出宣纸洒金与松石绿般的天然几何纹样。',
+      meta: ['玻利维亚 · 海拔 3,656m', 'Google Earth View 4K', '19.86°S 地球坐标'],
+      tags: ['太空俯瞰', '盐沼', '南美', 'earthview'],
+      palette: ['#8caea8', '#f2f6f4', '#d8be9c']
+    },
+    {
+      id: 'ev-5583',
+      channel: 'landscapes',
+      kind: 'image',
+      facet: 'earthview',
+      title: '太空俯瞰 · 纳米布八千万年古红沙漠与枯水河界',
+      shortTitle: '太空俯瞰<br>纳米布红沙海',
+      subtitle: 'Google Earth View 卫星 4K · Gobabeb, Namibia',
+      thumbUrl: 'https://www.gstatic.com/prettyearth/assets/full/5583.jpg',
+      fullUrl: 'https://www.gstatic.com/prettyearth/assets/full/5583.jpg',
+      mapUrl: 'https://www.google.com/maps/@-23.537088,15.023289,17z/data=!3m1!1e3',
+      country: '纳米比亚',
+      wikiTitle: '纳米布沙漠',
+      relatedSeeds: ['纳米布沙漠', '苏丝斯黎', '本格拉寒流', '风成地貌'],
+      story: '地球上最古老的沙漠被库伊塞布间歇河一刀切开：南侧是氧化铁染成珊瑚橘红的百米高新月形沙丘，北侧却是寸沙难越的灰白砾石荒原，季节性洪水每年准时把企图过河的沙舌冲回大海。',
+      meta: ['纳米比亚 · 戈巴贝布', 'Google Earth View 4K', '23.54°S 地球坐标'],
+      tags: ['太空俯瞰', '沙漠', '纳米比亚', 'earthview'],
+      palette: ['#cf9678', '#f8f1ec', '#8aa3ad']
+    },
+
+    // ---------- 04 有意思的句子 (quotes) ----------
+    {
+      id: 'quote-sei-shonagon-makura',
+      channel: 'quotes',
+      kind: 'quote',
+      title: '清少纳言在一千年前列的「想起来就让人开心的小事」',
+      shortTitle: '《枕草子》<br>微末欢喜单',
+      subtitle: '清少纳言 · 《枕草子》（平安时代随笔）',
+      quote: '把撕碎的信纸随手拼起来，居然一下就对准了裂口；夜里醒来渴得要命，摸黑居然正好有冰凉的水喝；夏天傍晚洗完头坐在穿堂风里，发梢还没全干的时候，有人送来一封字迹清秀的短笺。',
+      story: '一千年前京都宫廷里的清少纳言既不写宏大史诗，也不讲大道理，她把皇后的赏赐一沓好纸藏在枕头底下，专门给世间万物拉清单：「令人扫兴的事」「明明很远却近在眼前的事」「看着很优雅其实心里直打鼓的事」。读她的笔记总觉得她要是活在今天，绝对是最会发碎碎念的朋友。',
+      meta: ['清少纳言 · 公元 1000 年前后', '《枕草子》生活切片', '反宏大叙事鼻祖'],
+      tags: ['枕草子', '随笔', '日常审美', '冷幽默'],
+      palette: ['#82afa6', '#eef7f5', '#e4b9a8']
+    },
+    {
+      id: 'quote-calvino-lightness',
+      channel: 'quotes',
+      kind: 'quote',
+      title: '卡尔维诺谈「轻盈」：像小鸟一样轻，而不是像羽毛一样轻',
+      shortTitle: '卡尔维诺<br>精准的轻盈',
+      subtitle: '伊塔洛·卡尔维诺 · 《未来千年文学备忘录 · 轻》',
+      quote: '请你们注意，我所说的轻，总是与精确和坚定连在一起的，而不是与模糊和随波逐流相连。保罗·瓦莱里说过：「应当像小鸟一样轻，而不是像羽毛一样轻。」',
+      story: '羽毛的轻是被风吹到哪算哪；小鸟的轻却是心里清楚要停在哪根树枝上，拍拍翅膀就能干脆利落地掠过沉重的地面。卡尔维诺写《树上的男爵》里一辈子住在树冠上不肯下地却依然谈恋爱、救火、跟拿破仑聊天的柯希莫，讲的就是这种带骨架的轻盈。',
+      meta: ['伊塔洛·卡尔维诺 · 1985', '《未来千年文学备忘录》', '轻盈与精确'],
+      tags: ['卡尔维诺', '文学', '轻盈', '哲思'],
+      palette: ['#7fa4bf', '#edf4f9', '#e3c496']
+    },
+    {
+      id: 'quote-pessoa-cloud-clerk',
+      channel: 'quotes',
+      kind: 'quote',
+      title: '里斯本会计员佩索阿：我的心略大于整个宇宙',
+      shortTitle: '佩索阿<br>道拉多雷斯街',
+      subtitle: '费尔南多·佩索阿 · 《不安之书》',
+      quote: '今天我突然领悟到一个荒谬而千真万确的事实：从来没有人真正到过道拉多雷斯街之外的地方。一切风景都在你怎样看下午四点钟斜照在会计账本边缘的那道光里。',
+      story: '佩索阿白天在里斯本贸易公司当老老实实的商业信函翻译员，晚上回到租来的房间，给自己捏造了七十多个性格、文风甚至星座都完全不同的「异名者」（有牧羊人诗人、有工程师、有古典医生），让他们在杂志上互相写信争论。去世后人们打开他留下的大木箱，里面整整躺着两万五千页手稿。',
+      meta: ['费尔南多·佩索阿', '《不安之书》', '里斯本木箱手稿'],
+      tags: ['佩索阿', '文学', '漫游', '冷幽默'],
+      palette: ['#939ec4', '#f0f2fa', '#dbb59e']
+    },
+    {
+      id: 'quote-borges-paradise-library',
+      channel: 'quotes',
+      kind: 'quote',
+      title: '博尔赫斯：如果每颗沙粒都是一页没有重复文字的泡泡',
+      shortTitle: '博尔赫斯<br>地图与疆域',
+      subtitle: '豪尔赫·路易斯·博尔赫斯 · 《论科学的精确性》全篇仅一段',
+      quote: '在那个帝国里，制图术达到了如此精确的地步：一个省的地图就占满整座城市，帝国的地图占满整个省。后来制图师们仍不满足，造出了一幅与帝国一比一完全重合的地图。后代觉得这幅巨图毫无用处，便任由它在日晒雨淋中破败；如今西方的沙漠里，还零星残存着地图的碎片，栖息着野兽和乞丐。',
+      story: '这篇小说全文只有一百多个字，却把「完美复刻现实」这件事调侃到了极致：当一张地图真的做到了跟世界一模一样大，它就不再是窗口，而变成了冗余的负担。好玩的窗口永远得留点呼吸的缝隙。',
+      meta: ['豪尔赫·路易斯·博尔赫斯 · 1946', '百字微型小说神作', '冷幽默寓言'],
+      tags: ['博尔赫斯', '冷幽默', '寓言', '哲思'],
+      palette: ['#c9a47e', '#f8f3eb', '#84a6a1']
+    },
+    {
+      id: 'quote-zhuangzi-useless-tree',
+      channel: 'quotes',
+      kind: 'quote',
+      title: '庄子劝惠施：你嫌大葫芦和大树没用，为什么不躺树底下乘凉打个盹？',
+      shortTitle: '庄子与惠施<br>大树底下乘凉',
+      subtitle: '《庄子 · 逍遥游》最松弛的一段斗嘴',
+      quote: '今子有大树，患其无用，何不树之于无何有之乡，广莫之野，彷徨乎无为其侧，逍遥乎寝卧其下？不夭斤斧，物无害者，无所可用，安所困苦哉！',
+      story: '逻辑学家惠施跑去跟庄子吐槽：我家院子里长了棵臭椿树，树干疙疙瘩瘩没法拉墨线，树枝歪七扭八没法做规矩家具，木匠路过连看都不看一眼，跟你庄子讲的话一样大而无当。庄子一点不恼，笑眯眯回他：正因为做不了栋梁才没人拿斧头砍它呀，你搬张竹床躺它影子里吹风睡午觉，不比啥都强？',
+      meta: ['《庄子 · 逍遥游》', '先秦最佳损友斗嘴', '无用之用'],
+      tags: ['庄子', '哲学', '冷幽默', '小院'],
+      palette: ['#80ab8e', '#eef6f0', '#d8be8c']
+    },
+    {
+      id: 'quote-szymborska-possibilities',
+      channel: 'quotes',
+      kind: 'quote',
+      title: '辛波斯卡的《种种可能》：偏爱不守时的绿色与荒谬的例外',
+      shortTitle: '辛波斯卡<br>偏爱清单',
+      subtitle: '维斯瓦娃·辛波斯卡（1996 诺贝尔文学奖）',
+      quote: '我偏爱电影。我偏爱猫。我偏爱瓦尔塔河沿岸的橡树。我偏爱狄更斯胜过陀思妥耶夫斯基……我偏爱写诗的荒谬胜过不写诗的荒谬。我偏爱绿色的许多可能性。我偏爱不把一切都归咎于理性的例外。',
+      story: '波兰女诗人辛波斯卡一辈子最怕严肃腔调，连领诺贝尔奖演讲开头都是「『我不知道』这四个字很小，但长着强壮的翅膀」。她用几十个毫不讲道理的「我偏爱」写成一首诗——人的品味本来就不必凑成严谨公式，喜欢哪颗泡泡全凭当下的心动。',
+      meta: ['维斯瓦娃·辛波斯卡', '《种种可能》', '轻灵诗意'],
+      tags: ['辛波斯卡', '诗歌', '偏爱', '冷幽默'],
+      palette: ['#7fb096', '#edf6f1', '#dfa2b0']
+    },
+    {
+      id: 'quote-wilde-fog',
+      channel: 'quotes',
+      kind: 'quote',
+      title: '王尔德的逆向观察：不是画模仿自然，是伦敦的大雾在模仿印象派',
+      shortTitle: '王尔德<br>伦敦雾模仿画',
+      subtitle: '奥斯卡·王尔德 · 《谎言的衰落》(1889)',
+      quote: '在画家把伦敦的雾画出来之前，伦敦的雾从哪里来？街上当然一直有让人咳嗽的气象水汽，但在惠斯勒和印象派把它们画成紫罗兰色与银灰色的夜曲之前，从来没有人真正「看见」过棕色与银色的雾。自然总是在模仿艺术。',
+      story: '王尔德用半开玩笑的毒舌点破了一个极准的心理学现象：你先在莫奈或宋瓷里见过某种微妙的天青色和晚霞紫，第二天傍晚推门下楼，抬头突然发现整条街的天空居然全长成了画里的配色。',
+      meta: ['奥斯卡·王尔德 · 1889', '《谎言的衰落》美学悖论', '艺术重塑眼睛'],
+      tags: ['王尔德', '印象派', '美学', '冷幽默'],
+      palette: ['#9c95be', '#f2f0f8', '#d9ad9c']
+    },
+    {
+      id: 'quote-feynman-flower',
+      channel: 'quotes',
+      kind: 'quote',
+      title: '费曼反驳画家朋友：懂物理只会给一朵花增加更多层的好看',
+      shortTitle: '费曼看花<br>微观也是诗',
+      subtitle: '理查德·费曼 · 《发现的乐趣》',
+      quote: '我有个艺术家朋友总说：「你们科学家把一朵花拆成枯燥的分子，把它的美全毁了。」我觉得他才有点奇怪——我也看得见花瓣柔和的颜色，可我还能同时想象里面一个个细胞在忙活，想象花为什么为了昆虫演化出光谱颜色，这意味着昆虫也有审美？科学知识从来只做加法，不做减法。',
+      story: '这位没事喜欢撬同事密码柜、在巴西狂欢节敲桑巴手鼓的诺奖物理学家晚年自己也学起了素描，还跟朋友约定互换课时——他教画家量子电动力学，画家教他怎么画人体线条。',
+      meta: ['理查德·费曼', '物理与审美的和解', '科学小品'],
+      tags: ['费曼', '科学史', '哲思', '好奇心'],
+      palette: ['#6ca6b8', '#ecf5f8', '#e6b87d']
+    },
+
+    // ---------- 05 星云与博物 (cosmos) ----------
+    {
+      id: 'wiki-5254504-carina-nebula',
+      channel: 'cosmos',
+      kind: 'image',
+      title: '距离地球 7500 光年 · 船底座星云恒星诞生尘埃柱',
+      shortTitle: '船底座星云<br>发光尘埃云',
+      subtitle: '欧洲南方天文台 ESO 观测 · 5828×3524 4K 深空摄影',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/4/45/ESO_-_The_Carina_Nebula_%28by%29.jpg/960px-ESO_-_The_Carina_Nebula_%28by%29.jpg',
+      fullUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/4/45/ESO_-_The_Carina_Nebula_%28by%29.jpg/2560px-ESO_-_The_Carina_Nebula_%28by%29.jpg',
+      story: '南天星空里最璀璨的恒星育婴室之一：年轻大质量恒星吹出的剧烈星风把周围氢气与星际尘埃雕琢成半透明的玫瑰色与冰蓝色泡泡云墙，每一缕丝绒般的亮边背后都有新恒星正在点燃核聚变。',
+      meta: ['ESO 智利拉西拉天文台', '距地球约 7,500 光年', '5828×3524 深空 4K'],
+      tags: ['星云', '深空', '天文', 'nebula', 'cosmos'],
+      palette: ['#b57ea8', '#f6eef4', '#6d9ec4']
+    },
+    {
+      id: 'wiki-1669175-helix-nebula',
+      channel: 'cosmos',
+      kind: 'image',
+      title: '上帝之眼 · 宝瓶座螺旋星云的红外丝绒环',
+      shortTitle: '宝瓶座<br>螺旋星云之眼',
+      subtitle: 'NASA 斯皮策空间望远镜 · 4279×3559 4K',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/7/7f/Comets_Kick_up_Dust_in_Helix_Nebula_%28PIA09178%29.jpg/960px-Comets_Kick_up_Dust_in_Helix_Nebula_%28PIA09178%29.jpg',
+      fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/7/7f/Comets_Kick_up_Dust_in_Helix_Nebula_%28PIA09178%29.jpg',
+      story: '一颗类似太阳的恒星在生命尾声温柔吐出外层气体壳，核心留下一颗白矮星静静照亮四周直径超过两光年的双层彩色气泡环。最奇妙的是中心红晕来自劫后余生的外围彗星彼此碰撞扬起的微尘。',
+      meta: ['NASA / JPL-Caltech · PIA09178', '距地球约 650 光年', '4279×3559 4K 原片'],
+      tags: ['星云', '宇宙泡泡', 'NASA', 'nebula'],
+      palette: ['#6da3b8', '#ebf4f8', '#d9847c']
+    },
+    {
+      id: 'wiki-18919964-cygnus-loop',
+      channel: 'cosmos',
+      kind: 'image',
+      title: '天鹅座面纱星云 · 一万五千年前超新星留下的紫外丝带',
+      shortTitle: '天鹅座面纱<br>紫外星云丝带',
+      subtitle: 'GALEX 紫外空间望远镜 · 6000×5208 超清',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/5/5b/Ultraviolet_image_of_the_Cygnus_Loop_Nebula_crop.jpg/960px-Ultraviolet_image_of_the_Cygnus_Loop_Nebula_crop.jpg',
+      fullUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/5/5b/Ultraviolet_image_of_the_Cygnus_Loop_Nebula_crop.jpg/2560px-Ultraviolet_image_of_the_Cygnus_Loop_Nebula_crop.jpg',
+      story: '一万五千年前，当地球上的人类刚开始在洞穴岩壁上画野牛时，天鹅座方向一颗恒星绽放成超新星；它的冲击波至今仍在星际介质中以每秒上百公里滑行，在紫外波段显影出如同青蓝色水墨丝缕般的纤细褶皱。',
+      meta: ['NASA GALEX 紫外波段', '天鹅座面纱星云', '6000×5208 超清采样'],
+      tags: ['星云', '面纱星云', '紫外光', 'cosmos'],
+      palette: ['#6298c9', '#ebf2fa', '#a58cc9']
+    },
+    {
+      id: 'wiki-1380626-antennae-galaxies',
+      channel: 'cosmos',
+      kind: 'image',
+      title: '正在慢动作拥抱的两座星系 · 乌鸦座触须星系',
+      shortTitle: '乌鸦座<br>双星系慢舞',
+      subtitle: '哈勃空间望远镜拍摄 · 3915×3885 4K',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/f/f6/Antennae_galaxies_xl.jpg/960px-Antennae_galaxies_xl.jpg',
+      fullUrl: 'https://upload.wikimedia.org/wikipedia/commons/f/f6/Antennae_galaxies_xl.jpg',
+      story: '两座原本各自旋转的漩涡星系在数亿年间缓缓靠近、像两颗巨大水彩泡泡一样彼此融合成心形轮廓——虽然包含上千亿颗恒星，但由于星际空间极其空旷，恒星本身几乎不会相撞，反而压缩气体云催生出成串的蓝白色年轻星团。',
+      meta: ['Hubble Space Telescope', 'NGC 4038 / NGC 4039', '3915×3885 4K 原片'],
+      tags: ['星系', '哈勃', '天文', 'galaxy'],
+      palette: ['#7f93c4', '#eef1fa', '#df96a8']
+    },
+    {
+      id: 'wiki-25271481-lagoon-nebula',
+      channel: 'cosmos',
+      kind: 'image',
+      title: '穿透尘埃迷雾 · 礁湖星云红外透视长卷',
+      shortTitle: '礁湖星云<br>红外星海',
+      subtitle: 'ESO VISTA 红外巡天望远镜 · 5990×2659 4K',
+      thumbUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/9/96/VISTA%27s_infrared_view_of_the_Lagoon_Nebula_%28Messier_8%29.jpg/960px-VISTA%27s_infrared_view_of_the_Lagoon_Nebula_%28Messier_8%29.jpg',
+      fullUrl: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/9/96/VISTA%27s_infrared_view_of_the_Lagoon_Nebula_%28Messier_8%29.jpg/2560px-VISTA%27s_infrared_view_of_the_Lagoon_Nebula_%28Messier_8%29.jpg',
+      story: '可见光会被星际尘埃遮挡，但红外望远镜能像透过磨砂玻璃一样直接看穿整团梅西耶 8 号星云，把藏在乳白色星云背后的数十万颗银河系背景繁星一粒不漏地显影出来。',
+      meta: ['人马座 · Messier 8', 'ESO VISTA 红外巡天', '5990×2659 宽幅 4K'],
+      tags: ['星云', '银河', '深空', 'nebula'],
+      palette: ['#7ba6b5', '#ecf4f7', '#d8b493']
+    },
+    {
+      id: 'cma-130939-hongshan-jade',
+      channel: 'cosmos',
+      kind: 'image',
+      title: '距今五千五百年 · 新石器时代红山文化黄玉神人兽面佩',
+      shortTitle: '五千年前<br>红山黄玉佩',
+      subtitle: '约公元前 4700–2920 年 · 远古先民的宇宙图腾 (4K)',
+      thumbUrl: 'https://openaccess-cdn.clevelandart.org/1953.628/1953.628_web.jpg',
+      fullUrl: 'https://openaccess-cdn.clevelandart.org/1953.628/1953.628_print.jpg',
+      story: '比甲骨文还要早两千年的辽河流域，史前玉匠用温润泛蜜糖色的岫岩透闪石雕出这枚仅巴掌大的坐姿神兽——线条极简却充满现代雕塑般的张力，是远古人类仰望星空与自然时留下的第一批实物密码。',
+      meta: ['新石器时代 · 红山文化', '2302×3400 4K 微距原片', 'Cleveland Museum of Art CC0'],
+      tags: ['博物', '红山玉器', '考古', 'jade'],
+      palette: ['#bfa878', '#f7f3ea', '#8da398']
+    },
+
+    // ---------- 06 神话·电影·哲思 (stories) ----------
+    {
+      id: 'story-sisyphus-lunch-break',
+      channel: 'stories',
+      kind: 'quote',
+      title: '西西弗斯其实先把死神锁进了自家衣柜，害人间好几年没人死成',
+      shortTitle: '西西弗斯<br>反锁死神轶事',
+      subtitle: '古希腊神话原版前传 · 比推石头好玩得多的一章',
+      quote: '大家只记得西西弗斯在冥界推石头，却常忘了他为什么受罚：宙斯派死神塔纳托斯去抓他，他笑嘻嘻请死神试戴一副「特制新款项链」，咔哒一声用铁链把死神锁进了储藏室。结果那阵子人间战场上刀砍断了都没人咽气，急得战神阿瑞斯亲自跑去撬锁救人。',
+      story: '被抓进冥界后他还没消停：临走前偷偷嘱咐妻子千万别给他办葬礼，到了冥王哈迪斯面前哭诉妻子不孝，骗得冥王放他回阳间三天「教训老婆」——结果他一回科林斯就坐在海边晒太阳喝葡萄酒，死活不肯回去了，硬是活到老死才被赫尔墨斯揪着耳朵拎回山脚下。所以加缪说「应当想象西西弗斯是幸福的」，按他本人的滑头脾气，下山那趟说不定真在吹口哨。',
+      meta: ['希腊神话冷知识', '西西弗斯前传', '加缪之外的另一面'],
+      tags: ['希腊神话', '西西弗斯', '冷幽默', '加缪'],
+      palette: ['#8ca4bf', '#eff3f8', '#dfaf8c']
+    },
+    {
+      id: 'story-kubrick-candlelight',
+      channel: 'stories',
+      kind: 'quote',
+      title: '库布里克为了不用一盏电灯拍十八世纪烛光，直接找 NASA 借了登月镜头',
+      shortTitle: '库布里克借<br>NASA 烛光镜头',
+      subtitle: '电影幕后奇闻 · 《巴里·林登》(1975)',
+      quote: '所有古装片拍烛光晚宴都在画外藏着几千瓦的聚光灯，库布里克偏不干：「十八世纪没有电灯，我的画面就只准点蜂蜡蜡烛。」摄影师摊手说普通电影镜头全黑拍不出东西，库布里克转头就去把蔡司给 NASA 阿波罗计划拍月球背面暗部特制的 f/0.7 超大光圈镜头买了三颗回来。',
+      story: '这颗镜头光圈大到景深只有薄薄几毫米——演员只要稍微前后歪一下脑袋就会失焦，剧组只好在地上拉刻度线，用工程车改装机身卡口。最终银幕上呈现出的烛光橘金色晕染，跟十八世纪英国油画一模一样，连油画颜料的空气感都复刻出来了。',
+      meta: ['电影史名场面 · 1975', 'Stanley Kubrick × Carl Zeiss f/0.7', '技术疯子浪漫'],
+      tags: ['电影故事', '库布里克', '光影', 'NASA'],
+      palette: ['#cfa06e', '#f8f2e8', '#7d92ab']
+    },
+    {
+      id: 'story-mary-room-color',
+      channel: 'stories',
+      kind: 'quote',
+      title: '黑白房间里的超级科学家玛丽，推门第一次看见真番茄时学到了新东西吗？',
+      shortTitle: '哲学思想实验<br>玛丽的房间',
+      subtitle: '弗兰克·杰克逊 (1982) · 意识哲学最著名的「感质」谜题',
+      quote: '假设玛丽是一位全知全能的视觉神经科学家，但她从小住在一间纯黑白的屋子里，只通过黑白屏幕研究世界。她掌握了关于「红色」的一切物理波长（约 650nm）、视锥细胞电位和大脑皮层反应公式。某天她推门走出房间，亲眼看见了一颗熟透的红番茄——请问：这一刻她学到了任何新知识吗？',
+      story: '如果物理数据已经是全部事实，她明明早就背熟了；可直觉告诉每个人，第一次被真实色彩击中的「哇，原来红是这种感觉！」（哲学家叫它 Qualia 感质）是任何公式都替代不了的第一人称体验。后来连提出这个实验的杰克逊本人自己都改过一次立场，至今每次讨论都能让神经科学家和哲学家吵上一下午。',
+      meta: ['心灵哲学思想实验', 'Qualia（感质）之谜', '带例子的哲学切片'],
+      tags: ['哲学', '思想实验', '色彩', '意识'],
+      palette: ['#c9888e', '#f9eff0', '#7ca3a8']
+    },
+    {
+      id: 'story-tarkovsky-polaroid',
+      channel: 'stories',
+      kind: 'quote',
+      title: '塔可夫斯基的宝丽来相册：为什么我们总想把刚溜走的那一秒留住？',
+      shortTitle: '塔可夫斯基<br>晨雾宝丽来',
+      subtitle: '安德烈·塔可夫斯基 · 《雕刻时光》与《Instant Light》',
+      quote: '人去电影院到底是去寻找什么？是去寻找失去的时间。电影历史上第一次把「时间」像黏土一样直接印在胶片上——风吹歪草叶的弧度、水洼慢慢变干的边缘，都不是符号，而是时间本身的指纹。',
+      story: '1979 年拍完《潜行者》后，意大利诗人托尼诺送给塔可夫斯基一台宝丽来 SX-70 相机。这位拍长镜头极其苛刻的导演立刻迷上了等待显影的那九十秒，在乡下木屋窗边拍下了晨雾里的茶杯、狗、妻儿的背影。每张小方片都泛着淡淡的青蓝色调，安静得像梦醒后还没散掉的余温。',
+      meta: ['电影与摄影手记', '宝丽来 SX-70 切片', '雕刻时光'],
+      tags: ['电影故事', '塔可夫斯基', '摄影', '时间'],
+      palette: ['#799ea8', '#edf4f6', '#cbb497']
+    },
+    {
+      id: 'story-apollo-blue-marble',
+      channel: 'stories',
+      kind: 'quote',
+      title: '人类拍得最广的一张「偷拍照」：阿波罗 17 号宇航员在太空随手倒拿哈苏按下的蓝色弹珠',
+      shortTitle: '阿波罗 17 号<br>蓝色弹珠幕后',
+      subtitle: '科学史切片 · 1972 年 12 月 7 日距地球 29,000 公里',
+      quote: 'NASA 原本的飞行任务表里压根没安排这张照片！飞向月球途中，三名宇航员回头透过舷窗，突然发现阳光正好从背后完整照亮整颗地球——它看起来真像小孩手心里一颗脆弱透明的蓝色玻璃弹珠。三个人忙着互相递哈苏相机抢拍，回地球后谁都不肯承认是别人按的快门。',
+      story: '更逗的是：太空里根本没有上下之分，宇航员其实拍出来的原片里南极洲是在正上方的！NASA 发布前怕地面读者看着头晕，特意把底片旋转了 180 度才洗印出来。',
+      meta: ['科学史幕后 · 1972', 'The Blue Marble 原片趣闻', '宇宙视角'],
+      tags: ['科学史', '宇宙', '摄影', '冷幽默'],
+      palette: ['#6497c4', '#eaf2fa', '#c2d8e8']
+    },
+    {
+      id: 'story-hermes-cattle',
+      channel: 'stories',
+      kind: 'quote',
+      title: '出生第一天上午学会弹琴，下午顺走哥哥五十头牛：神界小学生赫尔墨斯',
+      shortTitle: '赫尔墨斯<br>出生当日奇遇',
+      subtitle: '《荷马颂诗 · 致赫尔墨斯》· 奥林匹斯最机灵的谈判家',
+      quote: '赫尔墨斯清晨刚在山洞里出生，中午溜出门捡到一只乌龟壳做成世上第一把里拉琴，傍晚觉得肚子饿，跑去把太阳神阿波罗放牧的五十头神牛倒着穿草鞋牵走了——牛蹄印全朝后，害阿波罗顺着脚印越找越反。',
+      story: '阿波罗气冲冲找上门时，刚满一天的赫尔墨斯正裹着尿布躺在摇篮里装睡：「我昨天才出生，连门槛都没迈过，哪知道牛长啥样！」宙斯在旁边听得哈哈大笑。最后赫尔墨斯掏出那把乌龟壳竖琴弹了一曲，阿波罗当场听迷了眼，心甘情愿拿整群牛加一根金手杖换了那把琴，哥俩从此成了奥林匹斯最好的搭档。',
+      meta: ['古希腊神话切片', '《荷马颂诗》喜剧名篇', '里拉琴的诞生'],
+      tags: ['希腊神话', '赫尔墨斯', '音乐', '冷幽默'],
+      palette: ['#d4a86e', '#f9f3e8', '#7fa89e']
+    }
+  ];
+
+  // 为每条精选种子挂载精确维基百科词条、时空/地貌分面与顺藤摸瓜关联词条，消除碎片化
+  const CURATED_WIKI_ENRICH = {
+    'cma-380118-qingbai': { facet: 'china-tang-song', wikiTitle: '青白瓷', relatedSeeds: ['景德镇陶瓷', '宋朝艺术', '点茶', '汝窑'] },
+    'cma-695985-goryeo-celadon': { facet: 'china-tang-song', wikiTitle: '高丽青瓷', relatedSeeds: ['秘色瓷', '越窑', '宣和奉使高丽图经'] },
+    'cma-370537-iridescent-vase': { facet: 'greco-roman', wikiTitle: '路易斯·康福特·蒂芙尼', relatedSeeds: ['新艺术运动', '古罗马玻璃', '彩色玻璃'] },
+    'cma-144577-northern-celadon': { facet: 'china-tang-song', wikiTitle: '耀州窑', relatedSeeds: ['青瓷', '北宋', '龙泉窑'] },
+    'cma-93173-poppy-inkwell': { facet: 'baroque-dutch', wikiTitle: '新艺术运动', relatedSeeds: ['蒂芙尼', '工艺美术运动', '装饰艺术'] },
+    'cma-97491-comma-jade': { facet: 'japan-edo', wikiTitle: '勾玉', relatedSeeds: ['翡翠', '古坟时代', '中国玉器'] },
+    'cma-142716-stained-window': { facet: 'renaissance', wikiTitle: '花窗玻璃', relatedSeeds: ['哥特式建筑', '新艺术运动', '圣礼拜堂'] },
+    'cma-111801-celadon-winepot': { facet: 'china-tang-song', wikiTitle: '龙泉窑', relatedSeeds: ['青瓷', '哥窑', '南宋'] },
+
+    'cma-136510-monet-agapanthus': { facet: 'impressionism', wikiTitle: '睡莲 (莫奈)', relatedSeeds: ['克劳德·莫奈', '吉维尼', '印象派', '橘园美术馆'] },
+    'cma-136950-malin-clouds': { facet: 'china-tang-song', wikiTitle: '马麟 (画家)', relatedSeeds: ['马远', '王维', '终南别业', '南宋院体'] },
+    'aic-14620-monet-pourville': { facet: 'impressionism', wikiTitle: '克劳德·莫奈', relatedSeeds: ['印象派', '诺曼底', '外光主义', '日出·印象'] },
+    'aic-16564-monet-seine-mist': { facet: 'impressionism', wikiTitle: '克劳德·莫奈', relatedSeeds: ['塞纳河', '鲁昂大教堂 (莫奈)', '印象派'] },
+    'aic-27992-seurat-grande-jatte': { facet: 'impressionism', wikiTitle: '大碗岛的星期天下午', relatedSeeds: ['乔治·修拉', '点彩画派', '新印象派', '保罗·西涅克'] },
+    'aic-109314-vangogh-spring': { facet: 'impressionism', wikiTitle: '文森特·梵高', relatedSeeds: ['后印象派', '浮世绘', '提奥·梵高', '星夜'] },
+    'cma-115050-twachtman-clouds': { facet: 'impressionism', wikiTitle: '印象派', relatedSeeds: ['詹姆斯·麦克尼尔·惠斯勒', '色调主义', '风景画'] },
+    'aic-28560-vangogh-bedroom': { facet: 'impressionism', wikiTitle: '在亚尔的卧室', relatedSeeds: ['文森特·梵高', '黄房子', '阿尔勒', '保罗·高更'] },
+
+    'wiki-143032322-myvatn-aurora': { facet: 'polar-fjord', wikiTitle: '米湖', relatedSeeds: ['极光', '冰岛地理', '地磁暴'] },
+    'wiki-8472717-upsala-glacier': { facet: 'polar-fjord', wikiTitle: '冰川国家公园 (阿根廷)', relatedSeeds: ['巴塔哥尼亚', '莫雷诺冰川', '安第斯山脉'] },
+    'wiki-124751480-gokyo-lake': { facet: 'alpine-lake', wikiTitle: '萨加玛塔国家公园', relatedSeeds: ['喜马拉雅山脉', '珠穆朗玛峰', '冰碛湖'] },
+    'wiki-154986747-zagedan-cirque': { facet: 'alpine-lake', wikiTitle: '大高加索山脉', relatedSeeds: ['冰斗', '高山草甸', '厄尔布鲁士山'] },
+    'wiki-148263164-magenta-aurora': { facet: 'polar-fjord', wikiTitle: '极光', relatedSeeds: ['2024年5月太阳风暴', '太阳风', '电离层'] },
+    'wiki-51789190-svalbard-glacier': { facet: 'polar-fjord', wikiTitle: '斯瓦尔巴', relatedSeeds: ['斯瓦尔巴全球种子库', '北极圈', '冰架崩解'] },
+    'wiki-915077-jokulsarlon': { facet: 'polar-fjord', wikiTitle: '杰古沙龙冰河湖', relatedSeeds: ['瓦特纳冰原', '冰山', '冰岛'] },
+    'wiki-99193060-sofia-massif': { facet: 'alpine-lake', wikiTitle: '高加索山脉', relatedSeeds: ['悬谷', '冰川地貌', '瀑布'] },
+
+    'quote-sei-shonagon-makura': { wikiTitle: '枕草子', relatedSeeds: ['清少纳言', '平安时代', '紫式部', '源氏物语', '徒然草'] },
+    'quote-calvino-lightness': { wikiTitle: '伊塔洛·卡尔维诺', relatedSeeds: ['树上的男爵', '看不见的城市', '如果在冬夜，一个旅人', '保罗·瓦莱里', '乌力波'] },
+    'quote-pessoa-cloud-clerk': { wikiTitle: '费尔南多·佩索阿', relatedSeeds: ['惶然录', '里斯本', '异名', '葡萄牙文学'] },
+    'quote-borges-paradise-library': { wikiTitle: '豪尔赫·路易斯·博尔赫斯', relatedSeeds: ['虚构集', '巴别图书馆', '小径分岔的花园', '阿莱夫', '魔幻现实主义'] },
+    'quote-zhuangzi-useless-tree': { wikiTitle: '逍遥游', relatedSeeds: ['庄子', '惠施', '齐物论', '道家', '魏晋玄学'] },
+    'quote-szymborska-possibilities': { wikiTitle: '维斯瓦娃·辛波斯卡', relatedSeeds: ['诺贝尔文学奖', '切斯瓦夫·米洛什', '波兰文学', '查尔斯·狄更斯'] },
+    'quote-wilde-fog': { wikiTitle: '奥斯卡·王尔德', relatedSeeds: ['唯美主义', '道林·格雷的画像', '詹姆斯·麦克尼尔·惠斯勒', '印象派'] },
+    'quote-feynman-flower': { wikiTitle: '理查德·费曼', relatedSeeds: ['别闹了，费曼先生！', '量子电动力学', '费曼物理学讲义', '纳米技术'] },
+
+    'wiki-5254504-carina-nebula': { facet: 'deep-cosmos', wikiTitle: '船底座星云', relatedSeeds: ['海山二', '恒星形成', '詹姆斯·韦伯空间望远镜', '鹰星云'] },
+    'wiki-1669175-helix-nebula': { facet: 'deep-cosmos', wikiTitle: '螺旋星云', relatedSeeds: ['行星状星云', '白矮星', '环状星云'] },
+    'wiki-18919964-cygnus-loop': { facet: 'deep-cosmos', wikiTitle: '面纱星云', relatedSeeds: ['超新星遗迹', '蟹状星云', '星际介质'] },
+    'wiki-1380626-antennae-galaxies': { facet: 'deep-cosmos', wikiTitle: '触须星系', relatedSeeds: ['相互作用星系', '仙女座星系-银河系碰撞', '哈勃空间望远镜'] },
+    'wiki-25271481-lagoon-nebula': { facet: 'deep-cosmos', wikiTitle: '礁湖星云', relatedSeeds: ['三叶星云', '梅西耶天体', '人马座'] },
+    'cma-130939-hongshan-jade': { facet: 'china-ancient', wikiTitle: '红山文化', relatedSeeds: ['玉猪龙', '良渚文化', '新石器时代', '中国玉器'] },
+
+    'story-sisyphus-lunch-break': { wikiTitle: '西西弗斯', relatedSeeds: ['西西弗神话', '阿尔贝·加缪', '塔纳托斯', '哈迪斯', '荒诞主义'] },
+    'story-kubrick-candlelight': { wikiTitle: '巴里·林登', relatedSeeds: ['斯坦利·库布里克', '2001太空漫游', '卡尔·蔡司', '威廉·贺加斯'] },
+    'story-mary-room-color': { wikiTitle: '知识论证', relatedSeeds: ['感质', '心灵哲学', '意识难题', '哲学的僵尸', '物理主义'] },
+    'story-tarkovsky-polaroid': { wikiTitle: '安德烈·塔可夫斯基', relatedSeeds: ['潜行者 (1979年电影)', '镜子 (1975年电影)', '乡愁 (电影)', '宝丽来'] },
+    'story-apollo-blue-marble': { wikiTitle: '蓝色弹珠', relatedSeeds: ['阿波罗17号', '暗淡蓝点', '地出', '总览效应'] },
+    'story-hermes-cattle': { wikiTitle: '赫耳墨斯', relatedSeeds: ['阿波罗', '荷马颂诗', '里拉琴', '奥林匹斯十二主神'] }
+  };
+
+  CURATED_POOL.forEach(function (it) {
+    const enrich = CURATED_WIKI_ENRICH[it.id];
+    if (enrich) {
+      if (enrich.facet && !it.facet) it.facet = enrich.facet;
+      if (enrich.wikiTitle && !it.wikiTitle) it.wikiTitle = enrich.wikiTitle;
+      if (enrich.relatedSeeds && !it.relatedSeeds) it.relatedSeeds = enrich.relatedSeeds;
+    }
+  });
+
+  // 中文常见词 -> 分类/标签辅助匹配，方便「随手写偏好」立刻在本地生效
+  const KEYWORD_HINTS = [
+    { re: /瓷|影青|青瓷|汝|官窑|龙泉|釉|碗|壶/i, boost: ['宋瓷', '影青', '青瓷', 'celadon', 'porcelain'], ch: 'antiques' },
+    { re: /玻璃|琉璃|花窗|墨水|怀表|钟表|珐琅|铜/i, boost: ['玻璃', '琉璃', '古董', 'glass'], ch: 'antiques' },
+    { re: /玉|翡翠|红山|勾玉/i, boost: ['玉器', 'jade'], ch: 'antiques' },
+    { re: /莫奈|睡莲|印象派|梵高|修拉|浮世绘|油画|宋画|山水|云山/i, boost: ['莫奈', '印象派', '梵高', '宋画', 'Monet'], ch: 'paintings' },
+    { re: /冰川|雪山|极光|冰岛|湖|峡湾|海|森林/i, boost: ['冰川', '极光', '雪山', '湖泊', 'glacier', 'aurora'], ch: 'landscapes' },
+    { re: /博尔赫斯|卡尔维诺|枕草子|佩索阿|庄子|辛波斯卡|王尔德|诗|句子|冷幽默/i, boost: ['博尔赫斯', '卡尔维诺', '枕草子', '佩索阿', '冷幽默'], ch: 'quotes' },
+    { re: /星云|星系|宇宙|哈勃|天文|矿物|水晶|博物/i, boost: ['星云', '星系', '深空', '博物', 'nebula'], ch: 'cosmos' },
+    { re: /神话|电影|哲学|库布里克|塔可夫斯基|西西弗斯|科学/i, boost: ['希腊神话', '电影故事', '哲学', '科学史'], ch: 'stories' }
+  ];
+
+  function scoreItem(item, prefs, channelCfg, rng) {
+    let s = (rng ? rng() : Math.random()) * 2.2;
+    const textBlob = [
+      item.title || '',
+      item.subtitle || '',
+      item.quote || '',
+      item.story || '',
+      (item.tags || []).join(' '),
+      (item.meta || []).join(' ')
+    ].join(' ').toLowerCase();
+
+    const qWords = String((channelCfg && channelCfg.query) || '')
+      .split(/[\s,，、；;|]+/)
+      .map(function (w) { return w.trim().toLowerCase(); })
+      .filter(Boolean);
+    qWords.forEach(function (w) {
+      if (w.length >= 1 && textBlob.indexOf(w) >= 0) s += 1.6;
+    });
+
+    const note = String((prefs && prefs.freeformNote) || '');
+    if (note) {
+      KEYWORD_HINTS.forEach(function (kh) {
+        if (kh.re.test(note)) {
+          kh.boost.forEach(function (tag) {
+            if (textBlob.indexOf(tag.toLowerCase()) >= 0) s += 0.9;
+          });
+        }
+      });
+      // 识别「少一点xxx / 不要xxx / 不看xxx」降权
+      const negMatches = note.match(/(?:少一点|少看|少推|不要|不想看|避开)([^\s,，。；;！!]{1,8})/g) || [];
+      negMatches.forEach(function (phrase) {
+        const kw = phrase.replace(/^(?:少一点|少看|少推|不要|不想看|避开)/, '').trim().toLowerCase();
+        if (kw && textBlob.indexOf(kw) >= 0) s -= 6.0;
+      });
+    }
+
+    if (String(item.id || '').indexOf('ai-') === 0) s += 2.5;
+    return s;
+  }
+
+  const EN_FALLBACK_BY_CHANNEL = {
+    antiques: 'Museum Curio',
+    paintings: 'Fine Art Plate',
+    landscapes: 'Earth Horizon',
+    quotes: 'Literary Folio',
+    cosmos: 'Deep Cosmos',
+    stories: 'Myth & Cinema'
+  };
+
+  function extractEditorialEn(it) {
+    if (it.enTitle) return String(it.enTitle).trim();
+    const probe = [it.subtitle || '', (it.meta || []).join(' · ')].join(' · ');
+    const m = probe.match(/[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9'’&.,\-\s]{3,32}/g);
+    if (m && m.length) {
+      for (let i = 0; i < m.length; i++) {
+        const cand = m[i].replace(/\b(4K|UHD|CC0|IIIF|px)\b/gi, '').trim();
+        if (cand.length >= 4) return cand.slice(0, 26);
+      }
+    }
+    return EN_FALLBACK_BY_CHANNEL[it.channel] || 'Floating World';
+  }
+
+  function formatEnglishBubbleShort(titleStr) {
+    const clean = String(titleStr || '').replace(/\s*\([^)]*\)\s*/g, ' ').replace(/\s+/g, ' ').trim() || String(titleStr || '').trim();
+    const words = clean.split(' ').filter(Boolean);
+    if (words.length <= 2) return escapeMiniHtml(clean.slice(0, 22));
+    const l1 = words.slice(0, 2).join(' ');
+    const rest = words.slice(2, 5).join(' ');
+    return escapeMiniHtml(l1) + '<br>' + escapeMiniHtml(rest.length > 18 ? rest.slice(0, 17) + '…' : rest);
+  }
+
+  function enrichClientItem(it) {
+    if (!it || typeof it !== 'object') return it;
+    if (!it.previewUrl && it.thumbUrl) it.previewUrl = it.thumbUrl;
+    if (!it.sourceUrl) {
+      const idStr = String(it.id || '');
+      if (it.mapUrl) {
+        it.sourceUrl = it.mapUrl;
+      } else if (idStr.indexOf('cma-live-') === 0) {
+        it.sourceUrl = 'https://www.clevelandart.org/art/' + idStr.replace('cma-live-', '');
+      } else if (idStr.indexOf('aic-live-') === 0) {
+        it.sourceUrl = 'https://www.artic.edu/artworks/' + idStr.replace('aic-live-', '');
+      } else if (idStr.indexOf('commons-') === 0) {
+        it.sourceUrl = 'https://commons.wikimedia.org/?curid=' + idStr.replace('commons-', '');
+      } else if (it.fullUrl && it.fullUrl.indexOf('clevelandart.org') >= 0) {
+        const acc = it.fullUrl.match(/\/([0-9.a-zA-Z_-]+)_print\.jpg/i);
+        it.sourceUrl = acc ? ('https://www.clevelandart.org/art/' + acc[1]) : 'https://www.clevelandart.org/art/collection/search';
+      } else if (it.wikiTitle) {
+        it.sourceUrl = 'https://zh.wikipedia.org/wiki/' + encodeURIComponent(it.wikiTitle);
+      }
+    }
+    const fakeRe = /^(?:博物奇珍|馆藏名作|地球秘境|深空观测)(?:\s*[·/]\s*.*)?$/;
+    if (fakeRe.test(String(it.title || '').trim()) && it.enTitle) {
+      it.title = String(it.enTitle).trim();
+      it.enTitle = String(it.civilization || (it.meta && it.meta[0]) || '').trim();
+    }
+    if (it.title && /[\u4e00-\u9fa5]/.test(it.title)) {
+      if (!it.shortTitle || /博物奇珍|馆藏名作/.test(it.shortTitle)) {
+        it.shortTitle = formatShortLabel(it.title);
+      }
+    } else if (it.title) {
+      it.shortTitle = formatEnglishBubbleShort(it.title);
+    }
+    if (!it.enTitle) {
+      it.enTitle = extractEditorialEn(it);
+    }
+    if (it.story && /从距离地表数百公里的近地轨道垂直俯视|收录自每日全球自然地理|来自克利夫兰艺术博物馆\s*CC0|收录于芝加哥艺术博物馆\s*Public\s*Domain|维基共享资源年度精选/.test(it.story)) {
+      it.story = '';
+    }
+    return it;
+  }
+
+  CURATED_POOL.forEach(enrichClientItem);
+
+  function escapeMiniHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function truncateWords(str, maxLen) {
+    const clean = String(str || '').trim();
+    if (clean.length <= maxLen) return clean;
+    const cut = clean.slice(0, maxLen);
+    const lastSpace = cut.lastIndexOf(' ');
+    return (lastSpace >= 8 ? cut.slice(0, lastSpace) : cut).replace(/[.,;:\-\s]+$/, '') + '…';
+  }
+
+  function formatBilingualBubbleLabel(item) {
+    const primaryHtml = item.shortTitle || (
+      /[\u4e00-\u9fa5]/.test(String(item.title || ''))
+        ? formatShortLabel(item.title)
+        : formatEnglishBubbleShort(item.title)
+    );
+    const subRaw = String(item.enTitle || extractEditorialEn(item) || '').trim();
+    const subShort = truncateWords(subRaw, 24);
+    if (!subShort || subShort.toLowerCase() === String(item.title || '').trim().toLowerCase()) {
+      return '<span class="sab-zh">' + primaryHtml + '</span>';
+    }
+    return '<span class="sab-zh">' + primaryHtml + '</span><span class="sab-en">' + escapeMiniHtml(subShort) + '</span>';
+  }
+
+  /**
+   * 根据当前偏好权重、已读账本、AI 投递箱和候选池（种子 + 实时 API 池），组装 6 扇主泡窗口
+   */
+  function buildWindowFeed(extraPool, prefsInput, seenItemsMap, aiInboxList, seedNum) {
+    const prefs = Object.assign({}, DEFAULT_PREFERENCES, prefsInput || {});
+    const seen = (prefs.seenMode === 'off') ? {} : (seenItemsMap || {});
+    const channels = (prefs.channels && prefs.channels.length)
+      ? prefs.channels.map(function (c) { return Object.assign({}, c); })
+      : DEFAULT_PREFERENCES.channels.map(function (c) { return Object.assign({}, c); });
+
+    // 合并去重候选池：AI 投递箱 -> 实时 API 池 -> 内置精选种子池
+    const byId = new Map();
+    [].concat(aiInboxList || [], extraPool || [], CURATED_POOL).forEach(function (it) {
+      if (!it || !it.id) return;
+      if (!byId.has(it.id)) byId.set(it.id, enrichClientItem(Object.assign({}, it)));
+    });
+    const allItems = Array.from(byId.values());
+
+    // 简易可复现随机源
+    let s = (seedNum || Date.now()) >>> 0;
+    const rng = function () {
+      s = (s + 0x6D2B79F5) | 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+
+    // 按权重分配 6 个主泡槽位：若某频道权重被调成 0，把它的主泡槽位借给权重最高的频道开「分卷」
+    const activeChs = channels.filter(function (c) { return Number(c.weight) > 0; });
+    const basePool = activeChs.length ? activeChs : channels;
+    const sortedByWeight = basePool.slice().sort(function (a, b) { return (Number(b.weight) || 1) - (Number(a.weight) || 1); });
+
+    const slotPlan = [];
+    let borrowIdx = 0;
+    for (let i = 0; i < 6; i++) {
+      const orig = channels[i] || DEFAULT_PREFERENCES.channels[i];
+      if (Number(orig.weight) > 0 || !activeChs.length) {
+        slotPlan.push({ ch: orig, isExtraSplit: false });
+      } else {
+        const donor = sortedByWeight[borrowIdx % sortedByWeight.length];
+        borrowIdx++;
+        slotPlan.push({
+          ch: Object.assign({}, donor, {
+            title: donor.title + ' · 续卷',
+            sup: 'WINDOW 0' + (i + 1)
+          }),
+          isExtraSplit: true
+        });
+      }
+    }
+
+    const usedGlobal = new Set();
+    const sections = slotPlan.map(function (slotObj, sIdx) {
+      const secId = sIdx + 1;
+      const ch = slotObj.ch;
+      const childCount = (secId <= 4) ? 4 : 3; // 严格保持 1:1 物理坐标槽数（01-04 四子泡，05-06 三子泡）
+      const perBubbleDepth = Number(ch.weight) >= 4 ? 2 : 1; // 高权重频道每个子泡内置 2 张轮播切片
+
+      const candidates = allItems.filter(function (it) {
+        return it.channel === ch.id && !usedGlobal.has(it.id);
+      });
+
+      const unseen = candidates.filter(function (it) { return !seen[it.id]; });
+      const fallbackSeen = candidates
+        .filter(function (it) { return !!seen[it.id]; })
+        .sort(function (a, b) { return (seen[a.id] || 0) - (seen[b.id] || 0); });
+
+      unseen.sort(function (a, b) { return scoreItem(b, prefs, ch, rng) - scoreItem(a, prefs, ch, rng); });
+
+      let picked = unseen.slice(0, childCount * perBubbleDepth);
+      if (picked.length < childCount) {
+        const need = childCount - picked.length;
+        picked = picked.concat(fallbackSeen.slice(0, need));
+      }
+      // 极端兜底：若某自定义频道没匹配到，从全局未读补齐
+      if (picked.length < childCount) {
+        const globalFill = allItems.filter(function (it) { return !usedGlobal.has(it.id) && !seen[it.id]; });
+        picked = picked.concat(globalFill.slice(0, childCount - picked.length));
+      }
+
+      picked.forEach(function (it) { usedGlobal.add(it.id); });
+
+      const children = [];
+      for (let c = 0; c < childCount; c++) {
+        const primary = picked[c] || picked[0] || CURATED_POOL[(sIdx * 4 + c) % CURATED_POOL.length];
+        const playlist = [primary];
+        if (perBubbleDepth > 1 && picked[childCount + c]) {
+          playlist.push(picked[childCount + c]);
+        }
+        const labelHtml = formatBilingualBubbleLabel(primary);
+        children.push({
+          id: primary.id,
+          item: primary,
+          playlist: playlist,
+          palette: primary.palette || ['#7ca9a2', '#eef6f4', '#d9b391'],
+          motif: primary.kind === 'quote' ? 'quote' : 'horizon',
+          label: { zh: labelHtml, en: labelHtml },
+          desc: { zh: primary.story || primary.quote || '', en: primary.story || primary.quote || '' }
+        });
+      }
+
+      const zhLabel = formatMainLabel(ch.title);
+      const enArr = Array.isArray(ch.enTitle) && ch.enTitle.length >= 2
+        ? ch.enTitle
+        : [String(ch.id || 'WINDOW').toUpperCase(), 'CURATION'];
+
+      return {
+        id: secId,
+        channelId: ch.id,
+        weight: Number(ch.weight) || 0,
+        bgSup: ch.sup || ('WINDOW 0' + secId),
+        bgTitle: enArr,
+        label: { zh: zhLabel, en: enArr.join('<br>') },
+        directLeaf: true, // 点开子泡直接进入画卷长轴 / 播客电台，不再多绕一层空壳！
+        allChannelItems: picked,
+        children: children
+      };
+    });
+
+    return sections;
+  }
+
+  function formatShortLabel(title) {
+    const clean = String(title || '').replace(/^[《「]/, '').replace(/[》」]$/, '').trim();
+    if (clean.indexOf('·') > 0) {
+      const parts = clean.split('·').map(function (s) { return s.trim(); });
+      if (parts[0].length <= 6 && parts[1]) {
+        return parts[0] + '<br>' + parts[1].slice(0, 8);
+      }
+    }
+    if (clean.length <= 6) return clean;
+    return clean.slice(0, 6) + '<br>' + clean.slice(6, 13);
+  }
+
+  function formatMainLabel(title) {
+    const t = String(title || '').trim();
+    if (t.indexOf('<br>') >= 0) return t;
+    if (t.length <= 4) return t;
+    if (t.indexOf('·') > 0) {
+      const p = t.split('·');
+      return p[0].trim() + '<br>' + p.slice(1).join('·').trim();
+    }
+    if (t.indexOf('与') > 0 && t.length <= 7) {
+      const idx = t.indexOf('与') + 1;
+      return t.slice(0, idx) + '<br>' + t.slice(idx);
+    }
+    const mid = Math.ceil(t.length / 2);
+    return t.slice(0, mid) + '<br>' + t.slice(mid);
+  }
+
+  const initialSections = buildWindowFeed([], DEFAULT_PREFERENCES, {}, [], 20261114);
+
+  window.WORLD_DATA = {
+    defaultLang: 'zh',
+    THEMES: THEMES,
+    FONT_PRESETS: FONT_PRESETS,
+    DEFAULT_PREFERENCES: DEFAULT_PREFERENCES,
+    MUSEUM_FACETS_UI: MUSEUM_FACETS_UI,
+    LANDSCAPE_FACETS_UI: LANDSCAPE_FACETS_UI,
+    OBSIDIAN_CATALOG_URL: OBSIDIAN_CATALOG_URL,
+    OBSIDIAN_ASK_URL: OBSIDIAN_ASK_URL,
+    CURATED_POOL: CURATED_POOL,
+    buildWindowFeed: buildWindowFeed,
+    enrichClientItem: enrichClientItem,
+    formatBilingualBubbleLabel: formatBilingualBubbleLabel,
+
+    brand: {
+      mark: 'WORLD · WINDOW',
+      heroLines: ['WINDOW OF', 'FLOATING', 'WORLDS'],
+      heroSub: ['4K CURIOS & ART', 'EARTH HORIZONS', '& CONNECTED WIKI'],
+      footerWatermark: ['WINDOW OF', 'FLOATING', 'WORLDS'],
+      copyright: '© WINDOW OF FLOATING WORLDS'
+    },
+
     ui: {
       zh: {
         langLabel: 'ZH',
         pauseMotion: '暂停动效',
         playMotion: '恢复动效',
-        menuOpenLabel: '打开导航菜单',
-        menuCloseLabel: '关闭导航菜单',
-        ball0Sup: ['WORLD', 'WINDOW'],
-        ball0Sub: '世界之窗序章',
-        ball0Card: {
-          tag: 'PROLOGUE · 序章',
-          title: '世界之窗与心绪泡泡',
-          subtitle: '把远方的风声、光影切片与瞬时心绪收进会呼吸的水彩气泡里。',
-          body: '每一颗主泡代表一扇观察世界的窗口；点开主泡会浮现四个子主题气泡，再点开子主题则会绽放出三枚具体的记忆或灵感切片。靠近的泡泡会自动融合成柔润的胶质边缘，水珠顺着引力方向缓缓回流。',
-          meta: ['交互参照 · 1:1 物理与着色器底板', '数据解耦 · 直接编辑 data.js 即可替换内容']
-        },
-        ball7Lines: ['ALL', 'BUBBLES'],
-        ball7Sub: '全部气泡索引',
-        ball7Card: {
-          tag: 'INDEX · 全景索引',
-          title: '全部气泡与心绪切片总览',
-          subtitle: '跨越六扇窗口的 22 组分类气泡与 48 枚微观切片。',
-          body: '这里预留给未来的全景检索视图（按心绪色系、时间线或地理位置筛选所有泡泡）。点击任意卡片外部或按 Esc 即可回到刚才展开的泡泡位置。',
-          meta: ['共 8 颗主泡 · 6 组展开分支', '支持浏览位置与展开状态自动记忆恢复']
-        },
-        backToBubbles: '返回泡泡星图',
+        menuOpenLabel: '打开导航与私藏画匣',
+        menuCloseLabel: '关闭导航抽屉',
+        ball0Sup: ['TODAY', 'ATLAS'],
+        ball0Sub: '全屏漫游今日长卷',
+        ball7Lines: ['SHUFFLE', 'WINDOW'],
+        ball7Sub: '换一窗新鲜风物',
+        backToBubbles: '返回星图',
         navItems: [
-          { label: 'TOP · 星图首页', action: 'top' },
-          { label: 'PROLOGUE · 漫游序章', action: 'ball0' },
-          { label: '01 · 远方风物志', action: 'sec1' },
-          { label: '02 · 器物与触感', action: 'sec2' },
-          { label: '03 · 光影信号场', action: 'sec3' },
-          { label: '04 · 漫游坐标集', action: 'sec4' },
-          { label: '05 · 小院与手记', action: 'sec5' },
-          { label: '06 · 近期回响', action: 'sec6' }
+          { label: 'TOP · 回到顶部星图', action: 'top' },
+          { label: 'ATLAS · 全屏漫游今日画卷', action: 'ball0' },
+          { label: 'GALLERY · 私藏画匣（点心收藏）', action: 'fav-gallery' },
+          { label: 'MUSEUM · 博物馆文明漫游', action: 'museum-jump' },
+          { label: 'HORIZON · 自然纪实与微距深空', action: 'landscape-jump' },
+          { label: '01 · 古董与奇珍', action: 'sec1' },
+          { label: '02 · 画作与光影', action: 'sec2' },
+          { label: '03 · 远方 4K 秘境', action: 'sec3' },
+          { label: '04 · 书籍·漫游拾句', action: 'sec4' },
+          { label: '05 · 星云与博物', action: 'sec5' },
+          { label: '06 · 神话·影音·哲思', action: 'sec6' }
         ],
         externalLinks: [
-          { prefix: '✦', label: 'Observation Log · 观察手记' },
-          { prefix: '◎', label: 'Color Field · 水彩色谱' },
-          { prefix: '◌', label: 'Sound Postcards · 声音明信片' }
+          { prefix: '♡', label: '打开私藏画匣 Gallery', action: 'fav-gallery' },
+          { prefix: '◇', label: '在 Obsidian 打开收藏库 (LWA)', action: 'lwa' },
+          { prefix: '◈', label: '博物馆文明与年代画卷', action: 'museum-jump' },
+          { prefix: '✦', label: '频道权重与 AI 偏好面板', action: 'tuner' }
         ],
-        policyLinks: ['使用说明与数据格式', '无障碍与减弱动态说明', '本地离线运行指南']
+        policyLinks: ['AI 协作目录：feed-profile/preferences.md', '4K 开放馆藏：CMA / AIC / Commons / Earth View', '支持 Fable 定制专题链接与维基全章检索']
       },
       en: {
         langLabel: 'EN',
         pauseMotion: 'Pause',
         playMotion: 'Play',
-        menuOpenLabel: 'Open navigation menu',
+        menuOpenLabel: 'Open navigation & saved gallery',
         menuCloseLabel: 'Close navigation menu',
-        ball0Sup: ['WORLD', 'WINDOW'],
-        ball0Sub: 'Our Prologue',
-        ball0Card: {
-          tag: 'PROLOGUE',
-          title: 'Window of Floating Worlds',
-          subtitle: 'A living watercolor bubble atlas for distant horizons, tactile objects, and fleeting moods.',
-          body: 'Each primary sphere opens into first-level thematic bubbles, and spheres 01–04 further bloom into three leaf memory fragments. Nearby spheres merge organically via alpha-weighted Gaussian metaball thresholding while droplets drift back along each branch.',
-          meta: ['1:1 Physics & Shader Reference Foundation', 'Edit data.js to customize your own worlds']
-        },
-        ball7Lines: ['ALL', 'BUBBLES'],
-        ball7Sub: 'Archive Index',
-        ball7Card: {
-          tag: 'ARCHIVE INDEX',
-          title: 'Complete Bubble Constellation',
-          subtitle: 'All 6 thematic windows, 22 sub-clusters, and 48 placeholder memory fragments.',
-          body: 'Reserved for your future filterable archive view (by mood palette, season, or coordinates). Dismissing this dialog restores your exact scroll position and expanded bubble branch.',
-          meta: ['8 Primary Spheres · 3-Tier Expansion', 'Automatic History & Scroll State Restore']
-        },
+        ball0Sup: ['TODAY', 'ATLAS'],
+        ball0Sub: 'Open Fullscreen Atlas',
+        ball7Lines: ['REFRESH', 'WINDOW'],
+        ball7Sub: 'Shuffle Unseen Feed',
         backToBubbles: 'Back to Bubbles',
         navItems: [
-          { label: 'TOP', action: 'top' },
-          { label: 'PROLOGUE', action: 'ball0' },
-          { label: '01 · HORIZON DRIFT', action: 'sec1' },
-          { label: '02 · TACTILE FORMS', action: 'sec2' },
-          { label: '03 · LIGHT SIGNALS', action: 'sec3' },
-          { label: '04 · ATLAS COORDS', action: 'sec4' },
-          { label: '05 · QUIET YARD', action: 'sec5' },
-          { label: '06 · FIELD NOTES', action: 'sec6' }
+          { label: 'TOP · CONSTELLATION', action: 'top' },
+          { label: 'ATLAS · FULLSCREEN GALLERY', action: 'ball0' },
+          { label: 'GALLERY · SAVED FAVORITES', action: 'fav-gallery' },
+          { label: 'MUSEUM · CIVILIZATION ATLAS', action: 'museum-jump' },
+          { label: 'HORIZON · WILDLIFE, MACRO & EARTH', action: 'landscape-jump' },
+          { label: '01 · CURIOS & ANTIQUES', action: 'sec1' },
+          { label: '02 · FINE ART & LIGHT', action: 'sec2' },
+          { label: '03 · EARTH HORIZONS 4K', action: 'sec3' },
+          { label: '04 · BOOKS & PASSAGES', action: 'sec4' },
+          { label: '05 · COSMOS & MINERALS', action: 'sec5' },
+          { label: '06 · MYTH & CINEMA', action: 'sec6' }
         ],
         externalLinks: [
-          { prefix: '✦', label: 'Observation Log' },
-          { prefix: '◎', label: 'Color Field' },
-          { prefix: '◌', label: 'Sound Postcards' }
+          { prefix: '♡', label: 'Open Saved Favorites Gallery', action: 'fav-gallery' },
+          { prefix: '◇', label: 'Open Obsidian LWA Library', action: 'lwa' },
+          { prefix: '◈', label: 'Museum Civilization Atlas', action: 'museum-jump' },
+          { prefix: '✦', label: 'Channel Weights & AI Profile', action: 'tuner' }
         ],
-        policyLinks: ['Data Schema Guide', 'Motion & Accessibility', 'Offline Reference Notes']
+        policyLinks: ['AI Sync: feed-profile/preferences.md', '4K Sources: CMA / AIC / Commons / Earth View', 'Fable Curated Pages & Live Wikipedia Search']
       }
     },
 
-    // 6 个可展开主泡（01–04 含 L1 + L2 三级展开；05–06 含 L1 展开并直达卡片）
-    sections: [
-      {
-        id: 1,
-        bgSup: 'WINDOW 01',
-        bgTitle: ['HORIZON', 'DRIFT'],
-        label: { zh: '远方<br>风物志', en: 'HORIZON<br>DRIFT' },
-        children: [
-          {
-            label: { zh: '晨雾与<br>海岸线', en: 'Morning Mist &<br>Coastlines' },
-            items: [
-              {
-                palette: ['#3d7ea6', '#dceef5', '#f7c59f'],
-                motif: 'horizon',
-                label: { zh: '北纬四十三度<br>白雾灯塔', en: '43°N White Fog<br>Lighthouse' },
-                desc: {
-                  zh: '潮水退去后的砾石滩还留着夜雨的凉意，远处灯塔每十二秒扫过一次乳白色的海雾。',
-                  en: 'Pebble shores cool after night rain while a distant beacon sweeps across milky sea fog every twelve seconds.'
-                }
-              },
-              {
-                palette: ['#5da399', '#e8f6f3', '#fbe2b4'],
-                motif: 'orbit',
-                label: { zh: '盐田日落<br>镜面微风', en: 'Salt Pan Sunset<br>Mirror Breeze' },
-                desc: {
-                  zh: '浅浅的卤水把晚霞切成整齐的几何格，风一吹，整片粉橘色的天空都在水面轻轻晃动。',
-                  en: 'Shallow brine pools slice dusk into pastel rectangles, rippling the peach sky with every gust.'
-                }
-              },
-              {
-                palette: ['#ee7b6b', '#fde8e1', '#6e8fb2'],
-                motif: 'arch',
-                label: { zh: '渡轮尾迹与<br>海鸥低飞', en: 'Ferry Wake &<br>Low Gulls' },
-                desc: {
-                  zh: '慢船驶离港口时翻起青白色的泡沫带，三两只海鸥贴着浪尖滑翔，不急着去任何地方。',
-                  en: 'Pale seafoam trails behind the departing ferry as gulls glide inches above the swell.'
-                }
-              }
-            ]
-          },
-          {
-            label: { zh: '山谷回声<br>与林间道', en: 'Valley Echoes &<br>Forest Trails' },
-            items: [
-              {
-                palette: ['#6ca965', '#eef7e6', '#f6c85f'],
-                motif: 'leaf',
-                label: { zh: '雨后苔原<br>松针气息', en: 'Post-Rain Moss<br>Pine Scent' },
-                desc: {
-                  zh: '踩过吸饱雨水的厚青苔像踩在静音地毯上，阳光穿过冷杉林，落下一地碎金色的光斑。',
-                  en: 'Rain-soaked moss softens every footstep while sunbeams scatter warm gold across cedar needles.'
-                }
-              },
-              {
-                palette: ['#e59a3c', '#fff4df', '#5f8d78'],
-                motif: 'ripple',
-                label: { zh: '溪石浅滩<br>午后水声', en: 'Brook Stones &<br>Noon Current' },
-                desc: {
-                  zh: '清澈见底的融雪溪流绕着花岗岩打转，把树影揉成一团团流动的翡翠色波纹。',
-                  en: 'Snowmelt eddies around smooth granite boulders, weaving emerald tree shadows into liquid rings.'
-                }
-              },
-              {
-                palette: ['#7f8cc4', '#eceff9', '#f4a9a8'],
-                motif: 'horizon',
-                label: { zh: '暮色山脊线<br>第一颗星', en: 'Dusk Ridgeline<br>First Star' },
-                desc: {
-                  zh: '山谷里的炊烟慢慢沉下来的时候，靛蓝色的天际线上刚刚亮起今晚第一颗安静的星子。',
-                  en: 'Just as valley mist settles for the evening, a single steady star pierces the indigo ridge.'
-                }
-              }
-            ]
-          },
-          {
-            label: { zh: '街角晴雨<br>观察录', en: 'Street-Corner<br>Weather Log' },
-            items: [
-              {
-                palette: ['#f08a5d', '#fff0e5', '#4b6584'],
-                motif: 'window',
-                label: { zh: '屋檐雨滴<br>玻璃水痕', en: 'Eaves Raindrops<br>Window Traces' },
-                desc: {
-                  zh: '隔着起雾的咖啡馆玻璃窗看阵雨落下，两滴水珠在半途相遇，忽然加速滑进窗框深处。',
-                  en: 'Through a steamed cafe pane, two raindrops collide mid-glass and race together toward the sill.'
-                }
-              },
-              {
-                palette: ['#f3b54a', '#fff8e6', '#d96b6b'],
-                motif: 'bloom',
-                label: { zh: '午后四点<br>梧桐斜影', en: '4 PM Sycamore<br>Slanted Light' },
-                desc: {
-                  zh: '秋日下午四点的阳光最偏心，把老墙上的爬山虎和路过的单车影子拉得像老电影一样长。',
-                  en: 'Four-o-clock autumn light stretches bicycle shadows and ivy leaves across warm plaster walls.'
-                }
-              },
-              {
-                palette: ['#5aa8c9', '#e7f5fb', '#f6b3c2'],
-                motif: 'orbit',
-                label: { zh: '阵雨初晴<br>水洼倒影', en: 'After-Shower<br>Puddle Sky' },
-                desc: {
-                  zh: '柏油路上的积水像散落在地面的小镜子，低头走路的人一不小心就跨过了一整朵白云。',
-                  en: 'Sidewalk puddles turn into pocket mirrors holding drifting cumulus clouds upside down.'
-                }
-              }
-            ]
-          },
-          {
-            label: { zh: '夜航列车<br>车窗切片', en: 'Night Train<br>Window Cuts' },
-            items: [
-              {
-                palette: ['#3d5a80', '#e5ecf4', '#ee6c4d'],
-                motif: 'arch',
-                label: { zh: '跨海铁桥<br>远岸灯火', en: 'Sea Viaduct &<br>Harbor Lights' },
-                desc: {
-                  zh: '列车驶上跨海大桥的瞬间，轮轨声忽然变得空旷，海面上的渔火像撒在墨色丝绒上的碎钻。',
-                  en: 'Rails hum hollow over the bay bridge while harbor lights shimmer across ink-dark water.'
-                }
-              },
-              {
-                palette: ['#9c6ade', '#f3ecfc', '#f7b267'],
-                motif: 'window',
-                label: { zh: '无人小站<br>暖黄月台', en: 'Quiet Halts &<br>Amber Lamps' },
-                desc: {
-                  zh: '停靠两分钟的乡间小站没有广播，只有自动贩卖机和一盏暖黄路灯在夜风里静静亮着。',
-                  en: 'A two-minute country stop with no announcements, lit only by one warm platform lamp.'
-                }
-              },
-              {
-                palette: ['#e06d94', '#fcebf1', '#679499'],
-                motif: 'horizon',
-                label: { zh: '破晓之前<br>青紫色天光', en: 'Pre-Dawn<br>Violet Glow' },
-                desc: {
-                  zh: '天快亮时车窗外的田野先变成柔和的青紫色，紧接着第一缕金粉色的晨光擦亮了地平线。',
-                  en: 'Fields turn soft violet just before daybreak, then a thin rose-gold ribbon ignites the horizon.'
-                }
-              }
-            ]
-          }
-        ]
-      },
-      {
-        id: 2,
-        bgSup: 'WINDOW 02',
-        bgTitle: ['TACTILE', 'FORMS'],
-        label: { zh: '器物与<br>日常触感', en: 'TACTILE<br>FORMS' },
-        children: [
-          {
-            label: { zh: '纸张肌理<br>与墨迹', en: 'Paper Grain &<br>Ink Washes' },
-            items: [
-              {
-                palette: ['#489fb5', '#e8f6f8', '#ffa62b'],
-                motif: 'ripple',
-                label: { zh: '棉浆水彩纸<br>自然晕染', en: 'Cotton Rag<br>Wet-on-Wet' },
-                desc: {
-                  zh: '笔尖蘸满清水点进未干的群青色边缘，颜料自己顺着粗纹纸纤维慢慢长出羽毛般的分叉。',
-                  en: 'Clean water touches damp ultramarine pigment, blooming feathery edges along cotton fibers.'
-                }
-              },
-              {
-                palette: ['#82c09a', '#edf8f1', '#e87a7a'],
-                motif: 'leaf',
-                label: { zh: '旧书页边角<br>铅笔批注', en: 'Deckle Edges &<br>Pencil Notes' },
-                desc: {
-                  zh: '泛着暖米色的旧纸页留着几十年前轻手轻脚写下的2B铅笔字迹，连擦痕都带着温度。',
-                  en: 'Warm ivory pages preserve gentle graphite marginalia from decades past.'
-                }
-              },
-              {
-                palette: ['#5c7aff', '#ebeeff', '#f7b2bd'],
-                motif: 'window',
-                label: { zh: '半透明硫酸纸<br>叠影实验', en: 'Translucent Vellum<br>Layered Tint' },
-                desc: {
-                  zh: '两张彩色半透明描图纸叠在一起时，交界处像泡泡相融一样浮现出意料之外的柔和间色。',
-                  en: 'Two sheets of tinted vellum overlap to form soft third colors where light passes through.'
-                }
-              }
-            ]
-          },
-          {
-            label: { zh: '陶土釉色<br>与器皿', en: 'Ceramic Glaze &<br>Vessels' },
-            items: [
-              {
-                palette: ['#46b5a7', '#e6f8f5', '#f29f67'],
-                motif: 'orbit',
-                label: { zh: '天青冰裂纹<br>手握茶杯', en: 'Celadon Crackle<br>Tea Cup' },
-                desc: {
-                  zh: '出窑时冷却收缩留下的细密开片像凝固的春冰，每次注满热茶都会折射出温润的光泽。',
-                  en: 'Fine celadon crackle lines catch warm amber light whenever hot tea fills the cup.'
-                }
-              },
-              {
-                palette: ['#d97757', '#fbf0eb', '#69a297'],
-                motif: 'arch',
-                label: { zh: '粗陶素烧<br>指腹拉坯痕', en: 'Raw Stoneware<br>Wheel Rings' },
-                desc: {
-                  zh: '不上釉的外壁保留着陶土原本的砂粒感，一圈圈微小的起伏记录着掌心旋转时的呼吸。',
-                  en: 'Unglazed stoneware rings trace the quiet rhythm of hands shaping wet clay on the wheel.'
-                }
-              },
-              {
-                palette: ['#729ea1', '#ecf4f4', '#ec9ded'],
-                motif: 'bloom',
-                label: { zh: '乳白甜白釉<br>晨光小碟', en: 'Milky Glaze<br>Morning Dish' },
-                desc: {
-                  zh: '边缘薄得微微透光的白瓷小碟，盛着刚洗好的几颗红樱桃，像水彩泡泡里的一点朱砂。',
-                  en: 'Thin porcelain rims glow translucent beside bright cherries washed in morning water.'
-                }
-              }
-            ]
-          },
-          {
-            label: { zh: '玻璃折光<br>小标本', en: 'Glass Prisms &<br>Specimens' },
-            items: [
-              {
-                palette: ['#3fa7d6', '#e6f5fc', '#f79d84'],
-                motif: 'bloom',
-                label: { zh: '吹制气泡玻璃<br>镇纸球', en: 'Seeded Glass<br>Paperweight' },
-                desc: {
-                  zh: '透明玻璃球心封存着十几颗上升到一半的小气泡，转动角度时整间屋子的窗户都缩在里面。',
-                  en: 'Tiny air bubbles suspended inside hand-blown glass bend the room into miniature horizons.'
-                }
-              },
-              {
-                palette: ['#59c3c3', '#e8f9f9', '#f4d06f'],
-                motif: 'horizon',
-                label: { zh: '棱镜窗挂与<br>墙面彩虹', en: 'Window Prism<br>Wall Spectrum' },
-                desc: {
-                  zh: '每到晴天下午三点半，书架尽头的白墙上就会准时游过一小段会缓慢移动的七彩光谱。',
-                  en: 'At 3:30 every sunny afternoon, a small rainbow band drifts slowly across the white bookshelf.'
-                }
-              },
-              {
-                palette: ['#6d8ea0', '#edf3f6', '#efa7a7'],
-                motif: 'orbit',
-                label: { zh: '海滩磨砂玻璃<br>薄荷碎片', en: 'Tumbled Mint<br>Sea Glass' },
-                desc: {
-                  zh: '被海浪打磨了不知多少年的汽水瓶碎片，早已没了棱角，对着光看像一块半融化的薄荷糖。',
-                  en: 'Decades of surf turn broken bottle glass into frosted mint lozenges soft to the touch.'
-                }
-              }
-            ]
-          },
-          {
-            label: { zh: '织物经纬<br>与温度', en: 'Woven Linen &<br>Warmth' },
-            items: [
-              {
-                palette: ['#6ab09e', '#eaf6f3', '#f3b778'],
-                motif: 'window',
-                label: { zh: '亚麻纱帘与<br>穿堂夏风', en: 'Sheer Linen &<br>Cross Breeze' },
-                desc: {
-                  zh: '疏松透光的本白亚麻帘子轻轻鼓起又落下，把刺眼的盛夏正午滤成了柔和的奶白色。',
-                  en: 'Unbleached linen curtains billow softly, filtering harsh noon glare into creamy daylight.'
-                }
-              },
-              {
-                palette: ['#4d908e', '#e8f3f2', '#f9844a'],
-                motif: 'ripple',
-                label: { zh: '植物染蓝布<br>深浅云纹', en: 'Indigo Tie-Dye<br>Cloud Wash' },
-                desc: {
-                  zh: '板蓝根染缸里浸过三遍的棉布晾在竹竿上，折叠处留下的白纹像极了夏夜高空的卷云。',
-                  en: 'Sun-dried indigo cotton unfolds to reveal pale cloud streaks where threads were bound.'
-                }
-              },
-              {
-                palette: ['#84a59d', '#eff5f3', '#f28482'],
-                motif: 'leaf',
-                label: { zh: '冬日粗针羊毛<br>暖手围巾', en: 'Chunky Wool<br>Winter Knit' },
-                desc: {
-                  zh: '燕麦色混纺着一点珊瑚红杂线的羊毛针脚，光是看着就能想起推门进屋时那口热可可。',
-                  en: 'Oatmeal wool flecked with coral yarn evokes coming indoors to a mug of hot cocoa.'
-                }
-              }
-            ]
-          }
-        ]
-      },
-      {
-        id: 3,
-        bgSup: 'WINDOW 03',
-        bgTitle: ['LIGHT', 'SIGNALS'],
-        label: { zh: '光影与<br>心绪信号', en: 'LIGHT<br>SIGNALS' },
-        children: [
-          {
-            label: { zh: '瞬时心绪<br>色谱仪', en: 'Fleeting Mood<br>Spectra' },
-            items: [
-              {
-                palette: ['#e066b5', '#fce9f6', '#8ecae6'],
-                motif: 'bloom',
-                label: { zh: '雀跃时刻<br>柑橘气泡粉', en: 'Spark of Joy<br>Citrus Rose' },
-                desc: {
-                  zh: '想到一个绝妙点子时的心情，就像拧开冰镇蜜桃苏打水，细密的小气泡争先恐后往上冒。',
-                  en: 'Sudden inspiration feels like uncapping chilled peach soda—effervescent rose bubbles rising fast.'
-                }
-              },
-              {
-                palette: ['#b57edc', '#f5eefb', '#ffb5a7'],
-                motif: 'orbit',
-                label: { zh: '放空漫游<br>薰衣草薄雾', en: 'Daydream Drift<br>Lavender Haze' },
-                desc: {
-                  zh: '什么都不必赶着完成的周六傍晚，思绪在淡紫色与杏粉色的云朵之间慢悠悠地晃荡。',
-                  en: 'Unscheduled Saturday twilight where thoughts float weightlessly between lilac and apricot clouds.'
-                }
-              },
-              {
-                palette: ['#f2789f', '#fdebf1', '#95d5b2'],
-                motif: 'ripple',
-                label: { zh: '安静笃定<br>海盐薄荷绿', en: 'Quiet Clarity<br>Sea-Salt Mint' },
-                desc: {
-                  zh: '把杂乱的线头一根根理顺之后的清爽感，像清晨推开窗迎面吹来的第一口薄荷味凉风。',
-                  en: 'Sorting tangled threads into calm clarity—cool morning air tinged with mint and sea salt.'
-                }
-              }
-            ]
-          },
-          {
-            label: { zh: '声音切片<br>留声机', en: 'Ambient Sound<br>Postcards' },
-            items: [
-              {
-                palette: ['#c77dff', '#f6ebff', '#ffd166'],
-                motif: 'ripple',
-                label: { zh: '黑胶空白轨<br>细微底噪', en: 'Vinyl Lead-In<br>Warm Crackle' },
-                desc: {
-                  zh: '唱针落下后、第一个音符响起前那两秒钟轻微的沙沙声，让整个房间瞬间安静下来。',
-                  en: 'Two seconds of warm stylus crackle before the first piano chord hushes the entire room.'
-                }
-              },
-              {
-                palette: ['#e56b8f', '#fce9ef', '#72efdd'],
-                motif: 'arch',
-                label: { zh: '夏夜风铃与<br>远处蝉鸣', en: 'Glass Windchime<br>Summer Dusk' },
-                desc: {
-                  zh: '挂在廊下的江户风铃偶尔清脆地响一声，反而把傍晚的微风衬托得更加凉爽悠长。',
-                  en: 'A single clear ring from a porch glass chime makes the evening breeze feel twice as cool.'
-                }
-              },
-              {
-                palette: ['#9d7cd8', '#f1ecfa', '#f4a261'],
-                motif: 'horizon',
-                label: { zh: '深夜键盘声<br>与煮水壶', en: 'Midnight Keys &<br>Simmering Kettle' },
-                desc: {
-                  zh: '万籁俱寂的凌晨一点，只有清脆的敲字节奏和厨房里水壶即将烧开的咕嘟声彼此陪伴。',
-                  en: 'At 1 AM, rhythmic keystrokes keep company with the gentle murmur of a kettle coming to boil.'
-                }
-              }
-            ]
-          },
-          {
-            label: { zh: '动态波纹<br>交互实验', en: 'Interactive Wave<br>Experiments' },
-            items: [
-              {
-                palette: ['#ec6ead', '#fce9f3', '#64dfdf'],
-                motif: 'orbit',
-                label: { zh: '水彩胶质融球<br>阈值张力', en: 'Metaball Glaze<br>Surface Tension' },
-                desc: {
-                  zh: '两颗旋转的水彩球靠近时，高斯模糊场在 0.125 阈值处自然拉出丝滑的胶质连接桥。',
-                  en: 'Alpha-weighted blur meets a sharp threshold to pull silky liquid bridges between neighbor spheres.'
-                }
-              },
-              {
-                palette: ['#d279ee', '#f8ebfc', '#ffcad4'],
-                motif: 'bloom',
-                label: { zh: '指尖涟漪场<br>笔刷折射', en: 'Cursor Wake<br>Brush Refraction' },
-                desc: {
-                  zh: '鼠标划过画布时留下渐隐的白色笔刷环，实时扭曲泡泡边缘并叠加上一层清透的高光。',
-                  en: 'Soft brush rings trail behind pointer movement, refracting bubble edges with a subtle luminous lift.'
-                }
-              },
-              {
-                palette: ['#f07199', '#fde9f0', '#a8dadc'],
-                motif: 'window',
-                label: { zh: '重力回流水珠<br>呼吸周期', en: 'Gravity Droplets<br>Return Cycle' },
-                desc: {
-                  zh: '展开的子泡泡每隔数秒便释放一颗微小水珠，沿着连线反方向缓缓飘散消融在空气里。',
-                  en: 'Expanded child spheres periodically release tiny droplets that drift and dissolve along their tether.'
-                }
-              }
-            ]
-          },
-          {
-            label: { zh: '梦境碎片<br>显影室', en: 'Lucid Fragment<br>Darkroom' },
-            items: [
-              {
-                palette: ['#b87ae2', '#f4ebfb', '#ffd6a5'],
-                motif: 'arch',
-                label: { zh: '漂浮图书馆<br>失重阶梯', en: 'Floating Library<br>Zero-G Stairs' },
-                desc: {
-                  zh: '醒来前五分钟记下的奇异画面：所有书架都漂在半空，翻开书页就能看见实时流动的海浪。',
-                  en: 'Five minutes before waking: weightless bookshelves where open pages ripple like real ocean tide.'
-                }
-              },
-              {
-                palette: ['#f26ca7', '#fde8f2', '#9bf6ff'],
-                motif: 'bloom',
-                label: { zh: '透明天文台<br>极光穹顶', en: 'Glass Observatory<br>Aurora Dome' },
-                desc: {
-                  zh: '站在巨大的肥皂泡穹顶中央仰望，翠绿色与品红色的极光像丝绸一样在头顶轻轻折叠。',
-                  en: 'Beneath an iridescent dome, emerald and magenta ribbons fold overhead like weightless silk.'
-                }
-              },
-              {
-                palette: ['#9381ff', '#efecff', '#ffc8dd'],
-                motif: 'horizon',
-                label: { zh: '云端邮局与<br>慢递信封', en: 'Cloud Post &<br>Slow Letters' },
-                desc: {
-                  zh: '寄给未来自己的信不需要贴邮票，只要装进一只淡紫色泡泡，顺着季风就会准时飘到。',
-                  en: 'Letters addressed to a future self need no stamp—only a violet bubble riding the trade winds.'
-                }
-              }
-            ]
-          }
-        ]
-      },
-      {
-        id: 4,
-        bgSup: 'WINDOW 04',
-        bgTitle: ['ATLAS', 'COORDS'],
-        label: { zh: '漫游<br>坐标集', en: 'ATLAS<br>COORDS' },
-        children: [
-          {
-            label: { zh: '东亚海风<br>与老街巷', en: 'East Coastlines &<br>Laneways' },
-            items: [
-              {
-                palette: ['#f79d3e', '#fff2e2', '#68b0ab'],
-                motif: 'arch',
-                label: { zh: '坡道电车与<br>柑橘汽水', en: 'Hillside Tram &<br>Mandarin Fizz' },
-                desc: {
-                  zh: '顺着陡峭的石板坡道一路走到尽头，叮当驶过的绿皮电车后面忽然露出一整片蔚蓝大海。',
-                  en: 'At the bottom of a steep stone lane, a passing tram unveils a sudden sweep of bright sea.'
-                }
-              },
-              {
-                palette: ['#8ac926', '#f2fae3', '#ff924c'],
-                motif: 'leaf',
-                label: { zh: '竹影茶席与<br>山泉新绿', en: 'Bamboo Courtyard<br>Spring Green' },
-                desc: {
-                  zh: '半敞的木廊外新笋拔节，风吹过竹叶的沙沙声把整个下午的时间都调慢了半拍。',
-                  en: 'Rustling bamboo outside an open timber veranda slows the afternoon down to half-tempo.'
-                }
-              },
-              {
-                palette: ['#ff7f51', '#ffece5', '#4ea8de'],
-                motif: 'window',
-                label: { zh: '骑楼晚风与<br>糖水铺灯光', en: 'Arcade Breeze &<br>Lantern Glow' },
-                desc: {
-                  zh: '南国夏夜九点半依然温热的风里，老街骑楼下亮着暖橘色灯牌，飘来清甜的陈皮绿豆沙香。',
-                  en: 'Warm 9:30 PM tropical air carries sweet citrus aromas beneath softly lit arcade colonnades.'
-                }
-              }
-            ]
-          },
-          {
-            label: { zh: '南半球<br>季风来信', en: 'Southern<br>Trade Winds' },
-            items: [
-              {
-                palette: ['#f4a261', '#fdf1e7', '#2a9d8f'],
-                motif: 'horizon',
-                label: { zh: '十一月蓝花楹<br>紫色晨街', en: 'November Jacaranda<br>Violet Streets' },
-                desc: {
-                  zh: '南半球的初夏在十一月准时抵达，一夜微风吹落满地蓝紫色花瓣，连清晨的影子都是香的。',
-                  en: 'Early summer arrives in November, carpeting quiet morning sidewalks in fallen jacaranda blossoms.'
-                }
-              },
-              {
-                palette: ['#e9c46a', '#fcf7e8', '#457b9d'],
-                motif: 'orbit',
-                label: { zh: '海岸砂岩步道<br>太平洋白浪', en: 'Sandstone Cliff<br>Ocean Swell' },
-                desc: {
-                  zh: '沿着蜂蜜色的砂岩悬崖散步，脚下太平洋的长浪一层层拍上来，水雾在阳光里闪着细碎白光。',
-                  en: 'Honey-colored cliff paths overlook long turquoise swells breaking into sunlit ocean spray.'
-                }
-              },
-              {
-                palette: ['#e76f51', '#fbe9e5', '#8ab17d'],
-                motif: 'bloom',
-                label: { zh: '桉树林晚霞<br>粉金色云层', en: 'Eucalyptus Dusk<br>Rose-Gold Sky' },
-                desc: {
-                  zh: '傍晚六点的天空大刀阔斧地铺开琥珀色与玫瑰粉，空气里混着淡淡的尤加利叶清香。',
-                  en: 'Wide southern skies blaze amber and rose while evening air carries crisp eucalyptus.'
-                }
-              }
-            ]
-          },
-          {
-            label: { zh: '北欧极昼<br>与峡湾', en: 'Northern Fjords &<br>White Nights' },
-            items: [
-              {
-                palette: ['#90be6d', '#eff6ea', '#f9c74f'],
-                motif: 'horizon',
-                label: { zh: '午夜十一点<br>不落金阳', en: '11 PM Midnight<br>Low Gold Sun' },
-                desc: {
-                  zh: '太阳贴着海平面滑行却始终不肯落下，给彩色木屋和停泊的帆船镀上一层长长的蜂蜜色。',
-                  en: 'At 11 PM the sun skims the water without setting, bathing timber harbors in endless honey light.'
-                }
-              },
-              {
-                palette: ['#f8961e', '#fef0de', '#577590'],
-                motif: 'arch',
-                label: { zh: '峡湾倒影与<br>雪线瀑布', en: 'Mirror Fjord &<br>Snowline Falls' },
-                desc: {
-                  zh: '没有一丝风的清晨，深邃的峡湾水面平静得像黑曜石镜子，把两侧雪峰和银白色飞瀑完整复制。',
-                  en: 'Windless fjord waters mirror snow-dusted peaks and slender silver waterfalls without a crease.'
-                }
-              },
-              {
-                palette: ['#f3722c', '#fdeae0', '#43aa8b'],
-                motif: 'window',
-                label: { zh: '桦木林小屋<br>莓果果酱', en: 'Birch Cabin &<br>Cloudberry Jam' },
-                desc: {
-                  zh: '白桦树皮在阳光下白得发亮，木桌上摆着刚熬好的金黄色云莓果酱和热腾腾的肉桂卷。',
-                  en: 'Silver birch trunks gleam outside while golden cloudberry jam cools beside fresh cinnamon buns.'
-                }
-              }
-            ]
-          },
-          {
-            label: { zh: '未知岛屿<br>留白处', en: 'Uncharted Isles &<br>Blank Margins' },
-            items: [
-              {
-                palette: ['#f9844a', '#feede4', '#4d908e'],
-                motif: 'orbit',
-                label: { zh: '古地图边缘<br>微风航线', en: 'Map Margin<br>Breeze Route' },
-                desc: {
-                  zh: '在还没有名字的坐标点画下一枚小小的水彩圆圈，留给下一次说走就走的偶然相遇。',
-                  en: 'A small watercolor ring penciled onto blank map coordinates, saved for a future detour.'
-                }
-              },
-              {
-                palette: ['#99d98c', '#f0faee', '#f48c06'],
-                motif: 'ripple',
-                label: { zh: '珊瑚浅礁<br>透明薄荷海', en: 'Lagoon Shoal<br>Mint Shallows' },
-                desc: {
-                  zh: '小船浮在透明得看不见水体的浅海里，船底的影子直接投在五米深处的白沙波纹上。',
-                  en: 'Water so clear a wooden skiff seems to hover in mid-air above sunlit sand ripples below.'
-                }
-              },
-              {
-                palette: ['#f9c74f', '#fef7e5', '#e07a5f'],
-                motif: 'bloom',
-                label: { zh: '火山黑沙滩<br>金色泡沫', en: 'Obsidian Shore<br>Gilded Foam' },
-                desc: {
-                  zh: '细密的黑色玄武岩沙滩上，退潮时留下的白色浪花边缘映着落日，像镶了一道金边。',
-                  en: 'Retreating surf leaves lacy white foam rimmed with sunset gold across black basalt sand.'
-                }
-              }
-            ]
-          }
-        ]
-      },
-      {
-        id: 5,
-        bgSup: 'YARD NOTES',
-        bgTitle: ['QUIET', 'YARD'],
-        label: { zh: '关于这扇<br>世界之窗', en: 'QUIET<br>YARD' },
-        directLeaf: true,
-        children: [
-          {
-            palette: ['#ef627c', '#fde8ec', '#fbd3c6'],
-            motif: 'window',
-            label: { zh: '造窗初衷', en: 'Why This<br>Window' },
-            desc: {
-              zh: '把零散的阅读、旅途见闻与转瞬即逝的心绪，从枯燥的列表里解放出来，放进有呼吸感、会彼此靠近融合的水彩气泡星图里。',
-              en: 'Freeing notes, travels, and passing moods from rigid lists into a breathing constellation of watercolor bubbles.'
-            }
-          },
-          {
-            palette: ['#f48da0', '#fef0f3', '#86d86a'],
-            motif: 'orbit',
-            label: { zh: '物理与着色<br>1:1 架构', en: '1:1 Shader &<br>Physics Spec' },
-            desc: {
-              zh: '完整复刻单世界离屏管线：白底透明清屏、31 抽头 Alpha 加权高斯模糊、80x-10 胶质阈值、卫星球呼吸鼓包、回流水珠与三级状态机。',
-              en: 'Full single-world offscreen pipeline: [1,1,1,0] clear, 31-tap alpha-weighted blur, 80a-10 metaball threshold, satellite bulges, and 3-tier state machine.'
-            }
-          },
-          {
-            palette: ['#ee5866', '#fde7e9', '#5cccbc'],
-            motif: 'bloom',
-            label: { zh: '如何改成<br>自己的泡泡', en: 'Customize<br>Your Bubbles' },
-            desc: {
-              zh: '打开 data.js，直接修改 sections 数组里的标题、文案、调色盘或缩略图纹样，无需改动任何 WebGL 着色器代码即可生成专属泡泡页。',
-              en: 'Simply edit sections in data.js—titles, stories, palettes, or thumbnail motifs—without touching WebGL shaders.'
-            }
-          }
-        ]
-      },
-      {
-        id: 6,
-        bgSup: 'ARCHIVE LOG',
-        bgTitle: ["WHAT'S", 'FLOATING'],
-        label: { zh: '近期心绪<br>与回响', en: 'FIELD<br>NOTES' },
-        directLeaf: true,
-        children: [
-          {
-            palette: ['#e45fca', '#fceaF8', '#fcd4c4'],
-            motif: 'ripple',
-            label: { zh: '心绪月报', en: 'Mood<br>Chronicle' },
-            desc: {
-              zh: '按月份汇总最近冒出来的颜色与高频词：如果这个月蓝色与薄荷绿泡泡变多，说明日子过得格外清透舒展。',
-              en: 'Monthly color weather report—watching cerulean and mint spheres gather during unhurried weeks.'
-            }
-          },
-          {
-            palette: ['#c387ee', '#f6effd', '#f982b8'],
-            motif: 'leaf',
-            label: { zh: '灵感拾遗', en: 'Found<br>Sparks' },
-            desc: {
-              zh: '随手记下的半句话、一张好看的光影配色、一段想做的小工具点子，都在这里慢慢发酵成形。',
-              en: 'Half-sentences, overheard melodies, and tool sketches saved before they evaporate.'
-            }
-          },
-          {
-            palette: ['#f674b8', '#feebf5', '#9ccbe8'],
-            motif: 'horizon',
-            label: { zh: '星图更新志', en: 'Constellation<br>Changelog' },
-            desc: {
-              zh: '记录每一次给世界之窗添砖加瓦的节点：从 1:1 参照底板出发，长出属于自己的交互小宇宙。',
-              en: 'Milestones as this 1:1 reference foundation grows into your personal World Window universe.'
-            }
-          }
-        ]
-      }
-    ],
+    sections: initialSections,
 
     // ===== 1:1 官网级精确物理与坐标参数（取自 glmain.min.js） =====
     physics: {
       borderSP: 600,
       borderMid: 1200,
-      // 8 颗主泡配置（id 7 的 y 相对于 id 4）
       mainBalls: [
-        { id: 0, fam: 0, scale: 1.30, pc: { x: 0.75, y: -380 },  fa: 1.00, sp: { x: 0.62, y: -510,  scale: 0.68 }, lerp: 0.40, sabR: 125, pitch: 0 },
-        { id: 1, fam: 1, scale: 1.00, pc: { x: 0.32, y: -1080 }, fa: 0.65, sp: { x: 0.28, y: -958,  scale: 0.54 }, lerp: 0.30, sabR: 122, pitch: -390 },
-        { id: 2, fam: 2, scale: 0.84, pc: { x: 0.74, y: -1560 }, fa: 0.60, sp: { x: 0.76, y: -1320, scale: 0.48 }, lerp: 0.20, sabR: 122, pitch: -390 },
-        { id: 3, fam: 3, scale: 1.05, pc: { x: 0.37, y: -2100 }, fa: 1.00, sp: { x: 0.30, y: -1698, scale: 0.54 }, lerp: 0.15, sabR: 122, pitch: -390 },
-        { id: 4, fam: 1, scale: 0.90, pc: { x: 0.73, y: -2660 }, fa: 0.65, sp: { x: 0.72, y: -2126, scale: 0.52 }, lerp: 0.40, sabR: 122, pitch: -390 },
-        { id: 5, fam: 0, scale: 0.84, pc: { x: 0.30, y: -3280 }, fa: 1.00, sp: { x: 0.27, y: -2622, scale: 0.46 }, lerp: 0.15, sabR: 122, pitch: -350 },
-        { id: 6, fam: 3, scale: 1.05, pc: { x: 0.57, y: -3980 }, fa: 1.00, sp: { x: 0.73, y: -3022, scale: 0.55 }, lerp: 0.20, sabR: 122, pitch: -350 },
-        { id: 7, fam: 1, scale: 0.45, pc: { x: 0.82, y: -512 },  fa: 0.65, sp: { x: 0.72, y: -292,  scale: 0.24 }, lerp: 0.30, sabR: 122, pitch: -350 }
+        { id: 0, fam: 0, scale: 1.30, pc: { x: 0.75, y: -380 },  fa: 0.88, sp: { x: 0.62, y: -510,  scale: 0.68 }, lerp: 0.40, sabR: 125, pitch: 0 },
+        { id: 1, fam: 1, scale: 1.00, pc: { x: 0.32, y: -1080 }, fa: 0.62, sp: { x: 0.28, y: -958,  scale: 0.54 }, lerp: 0.30, sabR: 122, pitch: -390 },
+        { id: 2, fam: 2, scale: 0.84, pc: { x: 0.74, y: -1560 }, fa: 0.58, sp: { x: 0.76, y: -1320, scale: 0.48 }, lerp: 0.20, sabR: 122, pitch: -390 },
+        { id: 3, fam: 3, scale: 1.05, pc: { x: 0.37, y: -2100 }, fa: 0.86, sp: { x: 0.30, y: -1698, scale: 0.54 }, lerp: 0.15, sabR: 122, pitch: -390 },
+        { id: 4, fam: 1, scale: 0.90, pc: { x: 0.73, y: -2660 }, fa: 0.62, sp: { x: 0.72, y: -2126, scale: 0.52 }, lerp: 0.40, sabR: 122, pitch: -390 },
+        { id: 5, fam: 0, scale: 0.84, pc: { x: 0.30, y: -3280 }, fa: 0.86, sp: { x: 0.27, y: -2622, scale: 0.46 }, lerp: 0.15, sabR: 122, pitch: -350 },
+        { id: 6, fam: 3, scale: 1.05, pc: { x: 0.57, y: -3980 }, fa: 0.86, sp: { x: 0.73, y: -3022, scale: 0.55 }, lerp: 0.20, sabR: 122, pitch: -350 },
+        { id: 7, fam: 1, scale: 0.45, pc: { x: 0.82, y: -512 },  fa: 0.62, sp: { x: 0.72, y: -292,  scale: 0.24 }, lerp: 0.30, sabR: 122, pitch: -350 }
       ],
       links: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [4, 7]],
       jointCells: [0, 1, 2, 3, 1, 0, 1],
       particleCells: { 1: 1, 2: 2, 3: 3, 4: 1, 5: 0, 6: 3 },
-      lineColors: { 1: '#FC9230', 2: '#55CEB4', 3: '#E971C6', 4: '#FC9230', 5: '#F15A79', 6: '#E971C6' },
-      // L1 子泡泡坐标 [角度deg(Y向上), 半径px, 基础缩放]
+      lineColors: { 1: '#8ab5ad', 2: '#7fb3c2', 3: '#b99fc9', 4: '#d9ad8b', 5: '#8ab5ad', 6: '#b59ebe' },
       l1PC: {
         1: [[4, 480, 1.00], [-29, 680, 1.20], [-62, 480, 0.92], [-95, 560, 1.10]],
         2: [[-170, 640, 1.28], [-137, 480, 1.00], [-104, 600, 0.90], [-71, 480, 1.15]],
@@ -760,7 +1400,6 @@
         id4:   [[-140, 342.5, 0.90], [-88, 350.0, 0.75], [-114, 537.5, 0.80], [-88, 612.5, 0.85]],
         right: [[-140, 342.5, 0.90], [-90, 387.5, 0.75], [-112, 618.75, 0.80], [-88, 740, 0.85]]
       },
-      // L2 孙泡泡坐标（glSecondSabBall）
       l2PC: {
         left:  [[25, 440, 1.00], [-22, 460, 1.25], [-80, 340, 0.90]],
         right: [[163, 520, 1.15], [-154, 400, 1.00], [-95, 340, 0.95]]
@@ -769,7 +1408,6 @@
         left:  [[-147, 240, 0.60], [-112, 410, 0.80], [-84, 250, 0.60]],
         right: [[-100, 250, 0.60], [-69, 410, 0.80], [-42, 240, 0.65]]
       },
-      // 11 组前景装饰球（glFrontBall，含 PC 与 SP 参数）
       frontBalls: [
         { trgN: 0, scale: 0.80, x: 0.30, y: 400,  color: 0, scrollScale: 1.20, sinH: 30, sinS:  0.005, sp: { scale: 0.30, x: 0.20,   y: 210   } },
         { trgN: 0, scale: 0.70, x: 0.83, y: -180, color: 0, scrollScale: 1.20, sinH: 40, sinS: -0.006, sp: { scale: 0.40, x: 0.95,   y: -50   } },
@@ -780,8 +1418,8 @@
         { trgN: 3, scale: 0.48, x: 0.94, y: 60,   color: 3, scrollScale: 1.10, sinH: 50, sinS:  0.010, sp: { scale: 0.35, x: 0.85,   y: 83    } },
         { trgN: 4, scale: 0.60, x: 0.86, y: 280,  color: 1, scrollScale: 1.20, sinH: 30, sinS: -0.004, sp: { scale: 1.40, x: -100,   y: 2000  } },
         { trgN: 4, scale: 0.35, x: 0.22, y: 140,  color: 1, scrollScale: 1.45, sinH: 40, sinS: -0.010, sp: { scale: 0.35, x: -10000, y: 2000  } },
-        { trgN: 5, scale: 1.20, x: 0.02, y: 640,  color: 0, scrollScale: 1.35, sinH: 60, sinS:  0.010, sp: { scale: 0.40, x: 1.00,   y: 42    } },
-        { trgN: 6, scale: 0.74, x: 0.74, y: 360,  color: 3, scrollScale: 1.40, sinH: 60, sinS:  0.010, sp: { scale: 0.45, x: 0.20,   y: 232   } }
+        { trgN: 6, scale: 0.58, x: 0.66, y: 290,  color: 3, scrollScale: 1.15, sinH: 26, sinS:  0.007, sp: { scale: 0.35, x: 0.82,   y: 160   } },
+        { trgN: 5, scale: 0.44, x: 0.16, y: -120, color: 0, scrollScale: 1.20, sinH: 28, sinS: -0.007, sp: { scale: 0.30, x: 0.14,   y: -90   } }
       ]
     }
   };
