@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN" id="top">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>世界之窗 · 心绪泡泡 — Window of Floating Worlds</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Libre+Caslon+Display&family=Libre+Franklin:wght@300;400;500;600&family=Noto+Sans+JP:wght@400;500&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <!-- 单一 WebGL2 世界画布与 8% Overlay 滤镜层（#gl-world） -->
+  <div id="gl-world" aria-hidden="true">
+    <div class="gl-world-overlay"></div>
+  </div>
+
+  <!-- 开场红幕揭幕层（glLoading） -->
+  <div id="gl-loading" aria-hidden="true">
+    <div class="gl-loading-bg"></div>
+    <div class="gl-loading-logo">
+      <span class="gl-loading-logo-mark">WINDOW·BUBBLE</span>
+      <span class="gl-loading-logo-sub">Window of Floating Worlds</span>
+    </div>
+    <div class="gl-loading-ring"></div>
+  </div>
+
+  <!-- 顶部常驻控制栏：动效暂停 + 语言切换 + 红色菜单按钮 -->
+  <header class="site-header">
+    <button type="button" class="motion-btn" id="motion-toggle">暂停动效</button>
+
+    <div class="lang-wrap" id="lang-wrap">
+      <button type="button" class="lang-trigger" id="lang-trigger">ZH</button>
+      <div class="lang-menu">
+        <div class="lang-menu-inner">
+          <button type="button" class="lang-opt active" data-lang-opt="zh">ZH</button>
+          <button type="button" class="lang-opt" data-lang-opt="en">EN</button>
+        </div>
+      </div>
+    </div>
+
+    <button type="button" class="menu-btn" id="menu-btn" aria-label="打开导航菜单">
+      <span class="menu-bar menu-bar--1"></span>
+      <span class="menu-bar menu-bar--2"></span>
+    </button>
+  </header>
+
+  <!-- 全屏红色导航抽屉（#global-menu） -->
+  <nav class="global-menu" id="global-menu" aria-hidden="true">
+    <div class="global-menu-watermark" aria-hidden="true">
+      <span>WINDOW OF</span>
+      <span>FLOATING</span>
+      <span>WORLDS</span>
+    </div>
+    <div class="global-menu-inner">
+      <ul class="menu-nav-list" id="menu-nav-list"></ul>
+
+      <div class="menu-sub-col">
+        <div class="menu-ext-list" id="menu-ext-list"></div>
+        <div class="menu-policy-list" id="menu-policy-list"></div>
+        <div class="menu-lang-inline">
+          <button type="button" class="active" data-lang-opt="zh">ZH</button>
+          <span>/</span>
+          <button type="button" data-lang-opt="en">EN</button>
+        </div>
+      </div>
+
+      <div class="global-menu-foot">
+        <span>© WORLD WINDOW &amp; MOOD BUBBLES ARCHIVE</span>
+        <span>WINDOW·BUBBLE</span>
+      </div>
+    </div>
+  </nav>
+
+  <!-- 固定交互热区舞台（所有主泡泡、L1 子泡泡、L2 孙泡泡按钮挂载点） -->
+  <div id="fix-stage"></div>
+
+  <!-- 滚动文档流：承载 Hero 大标题高度与底部红色页脚 -->
+  <div id="scrollFix">
+    <main id="contents"></main>
+
+    <footer id="footer">
+      <button type="button" class="gl-pagetop" id="pagetop-btn" aria-label="返回顶部">
+        <span class="gl-pagetop-ring"></span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="#e50012" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 19V5"></path>
+          <path d="m6 11 6-6 6 6"></path>
+        </svg>
+      </button>
+
+      <div class="footer-clip" aria-hidden="true">
+        <div class="footer-ghost-bar"></div>
+        <div class="footer-watermark">
+          <span>WINDOW OF</span>
+          <span>FLOATING</span>
+          <span>WORLDS</span>
+        </div>
+      </div>
+
+      <div class="footer-grid">
+        <div class="footer-nav" id="footer-nav"></div>
+
+        <div class="footer-col2">
+          <div class="footer-links" id="footer-ext-list"></div>
+          <div class="footer-small-links" id="footer-policy-list"></div>
+          <div class="menu-lang-inline">
+            <button type="button" class="active" data-lang-opt="zh">ZH</button>
+            <span>/</span>
+            <button type="button" data-lang-opt="en">EN</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <div class="footer-copy">© WORLD WINDOW &amp; MOOD BUBBLES ARCHIVE</div>
+        <div class="footer-mark">WINDOW·BUBBLE</div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- 叶子节点预览卡片（原生 <dialog closedby="any"> 支持点击遮罩或按 Esc 关闭并自动恢复展开位置） -->
+  <dialog class="detail-dialog" id="detail-dialog" closedby="any" aria-labelledby="detail-title">
+    <form method="dialog" class="detail-card">
+      <button type="submit" class="detail-close-icon" aria-label="关闭详情卡片">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#222222" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+          <path d="M3.5 3.5 12.5 12.5M12.5 3.5 3.5 12.5"></path>
+        </svg>
+      </button>
+
+      <div class="detail-head">
+        <div class="detail-art">
+          <img id="detail-art-img" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="">
+        </div>
+        <div>
+          <span class="detail-tag" id="detail-tag"></span>
+          <h2 class="detail-title" id="detail-title"></h2>
+        </div>
+      </div>
+
+      <p class="detail-subtitle" id="detail-subtitle"></p>
+      <p class="detail-body" id="detail-body"></p>
+      <div class="detail-meta" id="detail-meta"></div>
+
+      <div class="detail-actions">
+        <button type="submit" class="detail-back-btn" id="detail-back-btn">返回泡泡星图</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="./data.js"></script>
+  <script src="./sprites.js"></script>
+  <script src="./renderer.js"></script>
+</body>
+</html>
