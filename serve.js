@@ -1647,7 +1647,8 @@ async function curateItemsByKeywords(keywordsInput, domainPref, wikiHint) {
   } else if (domainPref === 'museum') {
     tasks.push(fetchCmaChannel('antiques', finalTerms, 0, meta).catch(() => []));
     if (finalTerms.length > 1) tasks.push(fetchCmaChannel('paintings', finalTerms, 1, meta).catch(() => []));
-    tasks.push(fetchAicChannel('paintings', finalTerms.slice(0, 3).join(' '), 1, meta).catch(() => []));
+    // fetchAicChannel 的第 3 个参数是偏移（0 → page=1）；传 1 会落到 page=2，正好跳过真正搜中的第 1 页。
+    tasks.push(fetchAicChannel('paintings', finalTerms.slice(0, 3).join(' '), 0, meta).catch(() => []));
   } else if (isLandscape) {
     tasks.push(fetchCommonsFeatured('landscapes', finalTerms, seed, meta).catch(() => []));
     tasks.push(fetchCommonsFeatured('landscapes', finalTerms, seed + 1, meta).catch(() => []));
@@ -1655,7 +1656,7 @@ async function curateItemsByKeywords(keywordsInput, domainPref, wikiHint) {
   } else {
     tasks.push(fetchCmaChannel('antiques', finalTerms, 0, meta).catch(() => []));
     if (finalTerms.length > 1) tasks.push(fetchCmaChannel('paintings', finalTerms, 1, meta).catch(() => []));
-    tasks.push(fetchAicChannel('paintings', finalTerms.slice(0, 3).join(' '), 1, meta).catch(() => []));
+    tasks.push(fetchAicChannel('paintings', finalTerms.slice(0, 3).join(' '), 0, meta).catch(() => []));
     tasks.push(fetchCommonsFeatured('landscapes', finalTerms, 0, meta).catch(() => []));
   }
 
