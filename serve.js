@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const ROOT = __dirname;
 // 静态服务白名单（相对 ROOT）。工程目录里还有 .env / .git / serve.js / feed-profile 等，不能对外。
 const PUBLIC_STATIC_FILES = new Set([
-  'index.html', 'styles.css', 'data.js', 'sprites.js', 'renderer.js', 'favicon.ico',
+  'index.html', 'standalone.html', 'styles.css', 'data.js', 'sprites.js', 'renderer.js', 'favicon.ico',
   'dist/index.single.html'
 ]);
 
@@ -782,13 +782,30 @@ function normalizeLiveItem(it) {
   if (out.story && BOILERPLATE_STORY_RE.test(out.story)) {
     out.story = '';
   }
+  if (out.wikiTitle) {
+    out.wikiTitle = String(out.wikiTitle)
+      .replace(/^(?:attributed to|workshop of|studio of|circle of|follower of|school of|after|manner of|style of|imitator of|copy after|possibly by|probably by|possibly|probably)\s+/i, '')
+      .trim();
+  }
+  if (!out.wikiFallback) {
+    out.wikiFallback = (Array.isArray(out.relatedSeeds) && out.relatedSeeds[0]) || out.civilization || '';
+  }
   return out;
 }
 
 // ==================== CMA 与芝加哥艺术博物馆 (AIC) 4K 抓取 ====================
+const ATTRIBUTION_PREFIX_RE = /^(?:attributed to|workshop of|studio of|circle of|follower of|school of|after|manner of|style of|imitator of|copy after|possibly by|probably by|possibly|probably)\s+/i;
+
 function inferArtworkWikiTopic(title, creator, culture, fallbackTopic) {
-  const cleanCreator = String(creator || '').split(/[(),;]/)[0].trim();
-  if (cleanCreator && cleanCreator.length >= 3 && !/unknown|anonymous|unidentified/i.test(cleanCreator)) {
+  const cleanCreator = String(creator || '')
+    .split(/[(),;\r\n]/)[0]
+    .replace(ATTRIBUTION_PREFIX_RE, '')
+    .trim();
+  if (
+    cleanCreator &&
+    cleanCreator.length >= 3 &&
+    !/unknown|anonymous|unidentified|various|artist|maker|painter|potter|author/i.test(cleanCreator)
+  ) {
     return cleanCreator;
   }
   if (fallbackTopic) return fallbackTopic;
@@ -844,7 +861,8 @@ async function fetchCmaChannel(channelId, terms, skipOffset, extraMeta) {
       fullUrl: pr.url,
       sourceUrl: r.url || `https://www.clevelandart.org/art/${r.accession_number || r.id}`,
       wikiTitle: inferArtworkWikiTopic(titleClean, creator, culture, fbWiki),
-      relatedSeeds: (extraMeta && extraMeta.relatedSeeds) || [culture, r.department].filter(Boolean),
+      wikiFallback: fbWiki || String(culture || '').split(',')[0].trim() || '艺术史',
+      relatedSeeds: (extraMeta && extraMeta.relatedSeeds) || [fbWiki, culture, r.department].filter(Boolean),
       story: wallDesc ? wallDesc.slice(0, 440) : '',
       meta: [culture || (extraMeta && extraMeta.label) || 'Open Access', dateStr || r.type || '', 'Cleveland Museum of Art'].filter(Boolean).slice(0, 3),
       tags: [chosenTerm, culture].filter(Boolean).slice(0, 4),
@@ -896,7 +914,8 @@ async function fetchAicChannel(channelId, queryStr, pageNum, extraMeta) {
       fullUrl,
       sourceUrl: `https://www.artic.edu/artworks/${r.id}`,
       wikiTitle: inferArtworkWikiTopic(titleClean, artistLine.split('·')[0], r.style_title || origin, fbWiki),
-      relatedSeeds: (extraMeta && extraMeta.relatedSeeds) || [r.style_title, origin].filter(Boolean),
+      wikiFallback: fbWiki || r.style_title || origin || '艺术史',
+      relatedSeeds: (extraMeta && extraMeta.relatedSeeds) || [fbWiki, r.style_title, origin].filter(Boolean),
       story: desc ? desc.slice(0, 440) : '',
       meta: [origin || (extraMeta && extraMeta.label) || 'Public Domain', dateStr || r.style_title || '', 'Art Institute of Chicago'].filter(Boolean),
       tags: [origin, r.style_title, r.classification_title].filter(Boolean).slice(0, 4),
@@ -965,6 +984,7 @@ async function fetchCommonsFeatured(channelId, terms, offset, extraMeta) {
       fullUrl,
       sourceUrl: ii.descriptionurl || `https://commons.wikimedia.org/?curid=${p.pageid}`,
       wikiTitle: (extraMeta && extraMeta.wikiTitle) || cleanTitle.slice(0, 36),
+      wikiFallback: (extraMeta && extraMeta.wikiTitle) || '自然地理学',
       relatedSeeds: (extraMeta && extraMeta.relatedSeeds) || quotedTerms.slice(0, 3).map((s) => s.replace(/"/g, '')),
       story: (desc && desc !== cleanTitle) ? desc.slice(0, 380) : '',
       meta: [(extraMeta && extraMeta.label) || 'Featured 4K', `${w}×${h}`],
@@ -1179,35 +1199,113 @@ function isUsefulWikiTopicTitle(title, selfTitle) {
   return true;
 }
 
-async function queryWikiHost(hostLang, queryTitle) {
+const WIKI_EN_STOPWORDS = new Set([
+  'of', 'in', 'on', 'at', 'to', 'by', 'an', 'as', 'or', 'the', 'and', 'with', 'from', 'for', 'into', 'over', 'near'
+]);
+const WIKI_GENERIC_SINGLE_TOKENS = new Set([
+  'bowl', 'dish', 'plate', 'cup', 'jar', 'vase', 'bottle', 'box', 'fragment', 'untitled',
+  'portrait', 'landscape', 'painting', 'figure', 'seated', 'standing', 'scroll', 'leaf', 'album',
+  'china', 'japan', 'france', 'italy', 'india', 'mount', 'mountain', 'river', 'lake', 'forest', 'island'
+]);
+
+function stripLatinDiacritics(str) {
+  return String(str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function isTitleRelevantHit(queryTitle, candidateTitle) {
+  const qNorm = stripLatinDiacritics(queryTitle).toLowerCase().replace(/\([^)]*\)/g, ' ').trim();
+  const cBase = stripLatinDiacritics(candidateTitle).replace(/\([^)]*\)/g, ' ').trim();
+  const cNorm = cBase.toLowerCase();
+  if (!qNorm || !cNorm) return false;
+  if (/disambiguation|消歧义|消歧義|同义词|^list of |列表$/i.test(candidateTitle)) return false;
+  if (qNorm === cNorm) return true;
+
+  const hasCjk = /[\u4e00-\u9fff]/.test(qNorm) || /[\u4e00-\u9fff]/.test(cNorm);
+  if (hasCjk) {
+    const qCjk = qNorm.replace(/[^\u4e00-\u9fff]/g, '');
+    const cCjk = cNorm.replace(/[^\u4e00-\u9fff]/g, '');
+    // 严禁把纯英文/拉丁检索词（如 "Song Xu"）误匹配到仅在参考文献中带英文姓氏的中文词条（如「伪钟虫属」）
+    if (!qCjk || !cCjk) return false;
+    if (qCjk.includes(cCjk) && cCjk.length >= 2) return true;
+    if (cCjk.includes(qCjk) && qCjk.length >= 2) return true;
+    return false;
+  }
+
+  const qWords = qNorm.split(/[^a-z0-9]+/).filter((w) => w.length >= 2 && !WIKI_EN_STOPWORDS.has(w));
+  const cWords = cNorm.split(/[^a-z0-9]+/).filter((w) => w.length >= 2 && !WIKI_EN_STOPWORDS.has(w));
+  if (!qWords.length || !cWords.length) return false;
+
+  const qSet = new Set(qWords);
+  const cSet = new Set(cWords);
+  const overlap = qWords.filter((w) => cSet.has(w));
+  const required = Math.min(2, qWords.length);
+  if (overlap.length >= required) {
+    if (overlap.length === 1 && WIKI_GENERIC_SINGLE_TOKENS.has(overlap[0]) && cWords.length > 1) return false;
+    return true;
+  }
+  // 允许长标题照片（如 "Common kingfisher in flight"）命中完整被包含的百科词条（如 "Common kingfisher"）
+  if (cWords.length >= 1 && cBase.length >= 5 && cWords.every((w) => qSet.has(w))) {
+    if (cWords.length === 1 && WIKI_GENERIC_SINGLE_TOKENS.has(cWords[0])) return false;
+    return true;
+  }
+  return false;
+}
+
+async function queryWikiHost(hostLang, queryTitle, opts) {
+  const options = opts || {};
+  const wantZhLink = Boolean(options.wantZhLink && hostLang === 'en');
+  const exactOnly = Boolean(options.exactOnly);
   const baseApi = `https://${hostLang}.wikipedia.org/w/api.php`;
   const variantParam = hostLang === 'zh' ? '&variant=zh-cn' : '';
+  const langlinkProp = wantZhLink ? '|langlinks' : '';
+  const langlinkParam = wantZhLink ? '&lllang=zh&lllimit=5' : '';
 
   const fetchByExactTitle = async (exactTitle) => {
     const url =
       `${baseApi}?action=query&format=json&redirects=1${variantParam}` +
-      `&prop=extracts|pageimages|links|info&inprop=url&explaintext=1&exsectionformat=wiki` +
+      `&prop=extracts|pageimages|links|info|pageprops${langlinkProp}&ppprop=disambiguation${langlinkParam}` +
+      `&inprop=url&explaintext=1&exsectionformat=wiki` +
       `&piprop=thumbnail|original&pithumbsize=1280&plnamespace=0&pllimit=36&titles=${encodeURIComponent(exactTitle)}`;
     const json = await fetchJsonHttps(url, 6200);
     const pages = (json && json.query && json.query.pages) ? Object.values(json.query.pages) : [];
     const p = pages[0];
-    if (!p || p.missing != null || !p.extract || String(p.extract).trim().length < 60) {
+    if (!p || p.missing != null || (p.pageprops && 'disambiguation' in p.pageprops)) {
+      return null;
+    }
+    const extText = String(p.extract || '').trim();
+    if (extText.length < 55) return null;
+    if (!options.allowTaxonomy && extText.length < 420 && /是.{0,22}(?:科|目|纲|门)的一?(?:属|种)/.test(extText)) {
       return null;
     }
     return p;
   };
 
   let page = await fetchByExactTitle(queryTitle).catch(() => null);
-  if (!page) {
-    const searchUrl =
+  if (!page && !exactOnly) {
+    // 1. 仅按标题词匹配 intitle:，并做相关性复核（绝不把参考文献正文撞词当成命中）
+    const intitleUrl =
       `${baseApi}?action=query&format=json${variantParam}&list=search` +
-      `&srsearch=${encodeURIComponent(queryTitle)}&srlimit=3`;
-    const sJson = await fetchJsonHttps(searchUrl, 5200).catch(() => null);
+      `&srsearch=${encodeURIComponent('intitle:' + queryTitle)}&srlimit=5`;
+    const sJson = await fetchJsonHttps(intitleUrl, 5200).catch(() => null);
     const hits = (sJson && sJson.query && sJson.query.search) || [];
     for (const hit of hits) {
-      if (hit && hit.title) {
+      if (hit && hit.title && isTitleRelevantHit(queryTitle, hit.title)) {
         page = await fetchByExactTitle(hit.title).catch(() => null);
         if (page) break;
+      }
+    }
+    // 2. 长短语（>=3 词，如摄影描述标题）尝试常规检索，但依然必须通过标题相关性校验
+    if (!page && String(queryTitle).trim().split(/\s+/).length >= 3) {
+      const phraseUrl =
+        `${baseApi}?action=query&format=json${variantParam}&list=search` +
+        `&srsearch=${encodeURIComponent(queryTitle)}&srlimit=5`;
+      const pJson = await fetchJsonHttps(phraseUrl, 5200).catch(() => null);
+      const pHits = (pJson && pJson.query && pJson.query.search) || [];
+      for (const hit of pHits) {
+        if (hit && hit.title && isTitleRelevantHit(queryTitle, hit.title)) {
+          page = await fetchByExactTitle(hit.title).catch(() => null);
+          if (page) break;
+        }
       }
     }
   }
@@ -1231,11 +1329,15 @@ async function queryWikiHost(hostLang, queryTitle) {
     }
   }
 
+  const zhLanglink = (wantZhLink && Array.isArray(page.langlinks) && page.langlinks[0] && page.langlinks[0]['*'])
+    ? String(page.langlinks[0]['*']).trim()
+    : '';
   const parsed = parseWikiPlainExtract(page.extract);
   return {
     ok: true,
     lang: hostLang,
     title: resolvedTitle,
+    zhLanglink,
     pageUrl: page.fullurl || `https://${hostLang}.wikipedia.org/wiki/${encodeURIComponent(resolvedTitle)}`,
     thumbnail: (page.thumbnail && page.thumbnail.source) || '',
     originalImage: (page.original && page.original.source) || (page.thumbnail && page.thumbnail.source) || '',
@@ -1285,12 +1387,16 @@ async function searchWikiSuggestions(rawQuery) {
   return { ok: true, query: q, items: out };
 }
 
-async function getWikiDossier(rawTitle, preferredLang) {
+async function getWikiDossier(rawTitle, preferredLang, rawFallback) {
   const cleanTitle = String(rawTitle || '').trim();
+  const cleanFallback = String(rawFallback || '').trim();
   if (!cleanTitle) return { ok: false, error: 'Missing title' };
 
   const lang = preferredLang === 'en' ? 'en' : 'zh';
-  const cacheKey = crypto.createHash('sha1').update(`${lang}:${cleanTitle.toLowerCase()}`).digest('hex');
+  const cacheKey = crypto
+    .createHash('sha1')
+    .update(`v2:${lang}:${cleanTitle.toLowerCase()}|fb:${cleanFallback.toLowerCase()}`)
+    .digest('hex');
   const cacheFile = path.join(WIKI_CACHE_DIR, `${cacheKey}.json`);
 
   const cached = readJsonSafe(cacheFile, null);
@@ -1298,10 +1404,40 @@ async function getWikiDossier(rawTitle, preferredLang) {
     return cached;
   }
 
-  let result = await queryWikiHost(lang, cleanTitle);
-  if (!result && lang === 'zh') {
-    result = await queryWikiHost('en', cleanTitle);
+  const isLatinQuery =
+    !/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(cleanTitle) &&
+    /[A-Za-z\u00C0-\u024F]/.test(cleanTitle);
+  const allowTaxonomy = /微距|野生|动物|昆虫|鸟|植物|珊瑚|物种|biology|macro|wildlife|species/i.test(`${cleanTitle} ${cleanFallback}`);
+  let result = null;
+
+  if (isLatinQuery) {
+    // 英文/欧洲变音/拼音检索词（如 "Song Xu"、"Urban Hörle"、"Celadon"）先走英文维基精确/标题匹配，经跨语言链接跳中文，杜绝中文全文撞参考文献
+    const enRes = await queryWikiHost('en', cleanTitle, { wantZhLink: lang === 'zh', allowTaxonomy });
+    if (enRes) {
+      // 仅在英文维基存在官方同实体 Wikidata 跨语言链接（zhLanglink）时跳中文，防止同名古人串台（如画家宋旭 1525 vs 进士宋旭 1429）
+      if (lang === 'zh' && enRes.zhLanglink) {
+        const zhExact = await queryWikiHost('zh', enRes.zhLanglink, { exactOnly: true, allowTaxonomy });
+        if (zhExact) result = zhExact;
+      }
+      if (!result) result = enRes;
+    } else if (lang === 'zh') {
+      result = await queryWikiHost('zh', cleanTitle, { exactOnly: true, allowTaxonomy });
+    }
+  } else {
+    result = await queryWikiHost(lang, cleanTitle, { allowTaxonomy });
+    if (!result && lang === 'zh') {
+      result = await queryWikiHost('en', cleanTitle, { allowTaxonomy });
+    }
   }
+
+  // 若具体画作标题/生僻工匠无同名百科条目（如 "Mt. Daochang"、"P. Herbier"），平滑回退至专题或器物时代/窑口/门类词条
+  if (!result && cleanFallback && cleanFallback.toLowerCase() !== cleanTitle.toLowerCase()) {
+    const fbRes = await getWikiDossier(cleanFallback, preferredLang, '');
+    if (fbRes && fbRes.ok) {
+      result = Object.assign({}, fbRes, { fallbackFrom: cleanTitle });
+    }
+  }
+
   if (!result) {
     return { ok: false, error: '未检索到对应维基词条', title: cleanTitle };
   }
@@ -1840,7 +1976,8 @@ const server = http.createServer(async (req, res) => {
     try {
       const title = reqUrl.searchParams.get('title') || '';
       const lang = reqUrl.searchParams.get('lang') || 'zh';
-      const dossier = await getWikiDossier(title, lang);
+      const fallback = reqUrl.searchParams.get('fallback') || '';
+      const dossier = await getWikiDossier(title, lang, fallback);
       sendJson(req, res, 200, dossier);
     } catch (e) {
       sendJson(req, res, 200, { ok: false, error: e.message });
@@ -1937,7 +2074,15 @@ const server = http.createServer(async (req, res) => {
       sendJson(req, res, 404, { ok: false, error: 'Curated page not found' });
       return;
     }
-    pageObj.items = Array.isArray(pageObj.items) ? pageObj.items.map(normalizeLiveItem) : [];
+    pageObj.items = Array.isArray(pageObj.items)
+      ? pageObj.items.map((rawIt) => {
+          const norm = normalizeLiveItem(rawIt);
+          if (norm && pageObj.wikiTitle) {
+            norm.wikiFallback = pageObj.wikiTitle;
+          }
+          return norm;
+        })
+      : [];
     sendJson(req, res, 200, { ok: true, page: pageObj });
     return;
   }
@@ -2033,7 +2178,7 @@ const server = http.createServer(async (req, res) => {
   const relPath = isSpaPageRoute ? 'index.html' : urlPath.replace(/^\/p\//, '/').replace(/^\/+/, '');
   const fullPath = path.resolve(ROOT, relPath);
 
-  if (!fullPath.startsWith(ROOT)) {
+  if (!fullPath.startsWith(ROOT + path.sep)) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('403 Forbidden');
     return;

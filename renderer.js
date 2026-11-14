@@ -4323,7 +4323,10 @@
         relatedTopics: ((p.links || []).map(function (l) { return l.title; })).slice(0, 12)
       };
     };
-    return (await queryHost('zh')) || (await queryHost('en')) || { ok: false, error: '离线未命中词条' };
+    const isLatin = !/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(title) && /[A-Za-z\u00C0-\u024F]/.test(title);
+    const firstLang = isLatin ? 'en' : 'zh';
+    const secondLang = isLatin ? 'zh' : 'en';
+    return (await queryHost(firstLang)) || (await queryHost(secondLang)) || { ok: false, error: '离线未命中词条' };
   }
 
   function renderTrailNav() {
@@ -4444,11 +4447,17 @@
     const reqId = ++showcaseState.wikiReqSeq;
     dosWikiArticle.innerHTML = '<div class="dos-loading">正在展开「' + escHtml(cleanTopic) + '」完整维基百科章节与知识脉络…</div>';
 
-    let data = wikiClientCache[cleanTopic] || null;
+    const fbTopic = (!appendToTrail && activeItem)
+      ? String(activeItem.wikiFallback || (activeItem.relatedSeeds && activeItem.relatedSeeds[0]) || activeItem.civilization || '').trim()
+      : '';
+    const clientCacheKey = fbTopic ? (cleanTopic + '::' + fbTopic) : cleanTopic;
+
+    let data = wikiClientCache[clientCacheKey] || null;
     if (!data) {
       try {
         if (isHttpServer) {
-          const resp = await fetch('/api/wiki?title=' + encodeURIComponent(cleanTopic) + '&lang=zh');
+          const fbParam = (fbTopic && fbTopic !== cleanTopic) ? ('&fallback=' + encodeURIComponent(fbTopic)) : '';
+          const resp = await fetch('/api/wiki?title=' + encodeURIComponent(cleanTopic) + '&lang=zh' + fbParam);
           if (resp.ok) data = await resp.json();
         } else {
           data = await fetchWikiDirectFallback(cleanTopic);
@@ -4457,7 +4466,7 @@
         data = { ok: false, error: '网络波动，暂未拉取到词条正文' };
       }
       if (data && data.ok) {
-        wikiClientCache[cleanTopic] = data;
+        wikiClientCache[clientCacheKey] = data;
       }
     }
 
