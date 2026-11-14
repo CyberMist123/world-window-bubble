@@ -9,6 +9,11 @@ const path = require('path');
 const crypto = require('crypto');
 
 const ROOT = __dirname;
+// 静态服务白名单（相对 ROOT）。工程目录里还有 .env / .git / serve.js / feed-profile 等，不能对外。
+const PUBLIC_STATIC_FILES = new Set([
+  'index.html', 'styles.css', 'data.js', 'sprites.js', 'renderer.js', 'favicon.ico',
+  'dist/index.single.html'
+]);
 
 // 自动加载本地未入库的 .env（保护个人域名与本地目录配置不进入公开/归档代码）
 (function loadLocalEnv() {
@@ -2037,6 +2042,14 @@ const server = http.createServer(async (req, res) => {
   if (urlPath === '/favicon.ico' && !fs.existsSync(fullPath)) {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // 只放前端真正要的文件；.env、.git、serve.js、feed-profile/（含 .cache）、snapshots/ 一律 404。
+  // 前端新加静态文件时要同步加进这张表。
+  if (!PUBLIC_STATIC_FILES.has(relPath.replace(/\\/g, '/'))) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('404 Not Found: ' + urlPath);
     return;
   }
 
