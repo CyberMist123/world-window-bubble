@@ -22,7 +22,8 @@
      ```powershell
      node fable-page.js --slug song-celadon-mist --title "天青等烟雨 · 宋瓷与云山特辑" --q "Song dynasty celadon landscape scroll" --wiki "汝窑" --note "挑了一组雨过天青的宋代青瓷与水墨云山，点开任意画作即可并排深读维基脉络。"
      ```
-     运行后直接返回专题页链接（同时自动挂载至全屏菜单抽屉「✦ 专题特辑」书架）。
+     运行后直接返回专题页链接（同时自动挂载至全屏菜单抽屉「✦ 专题特辑」书架）。关键词凑不出图（图源限流或太冷门）时返回 0 件、不建页。
+   - **自己挑作品**：加 `--items picks.json`，`picks.json` 是从 `/api/curate?q=...` 结果里挑出的作品对象数组（也接受 `/api/curate` 的原样输出）；纯 id 列表不行。
    - **免建文件无状态直达链接**：
      `/?title=微距雪花与晶簇&q=macro+snowflake+quartz+crystal&wiki=微距摄影&note=给你的冬日微距特辑`
 
