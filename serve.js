@@ -1956,9 +1956,18 @@ const server = http.createServer(async (req, res) => {
       const keywords = body.keywords || body.q || title;
       const slug = sanitizeSlug(body.slug, title);
       const wikiTitle = String(body.wikiTitle || body.wiki || String(keywords).split(/[\s,，·]+/)[0] || '').trim();
-      let items = Array.isArray(body.items) && body.items.length
+      let items = (Array.isArray(body.items) && body.items.length
         ? body.items.map(normalizeLiveItem)
-        : await curateItemsByKeywords(keywords, body.domain || '', wikiTitle);
+        : await curateItemsByKeywords(keywords, body.domain || '', wikiTitle)).filter((it) => it && it.id);
+      // 0 件就不建页、不进书架：上游限流（Wikimedia 429）或关键词太冷门时，空页打开是白板且不报错。
+      if (!items.length) {
+        sendJson(req, res, 422, {
+          ok: false,
+          error: '0 件作品，没建页：可能是图源在限流（如 Wikimedia too many requests），或关键词太冷门。换个关键词、换 --domain，或用 --items 自己挑。',
+          itemCount: 0
+        });
+        return;
+      }
 
       const nowIso = new Date().toISOString();
       const existing = readJsonSafe(path.join(PAGES_DIR, `${slug}.json`), null);

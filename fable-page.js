@@ -103,7 +103,7 @@ function requestLocalApi(method, apiPath, bodyObj) {
     wikiTitle: args.wiki || ''
   });
   if (!res || !res.ok) {
-    console.error('创建失败:', res);
+    console.error('创建失败:', (res && res.error) || res);
     process.exit(1);
   }
   console.log(JSON.stringify({
