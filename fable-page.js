@@ -4,7 +4,8 @@
  *
  * 【推荐两步策展流 · 极省 Token 且零跑题】
  *   Step 1 — 多馆藏 + 自然科学轻量探针（支持 | 并行搜多个意象，每条仅 ~28 tokens）：
- *     node fable-page.js --search "astrolabe | armillary sphere | Carina Nebula" [--domain museum|landscape] [--limit 18]
+ *     node fable-page.js --search "astrolabe | armillary sphere | Carina Nebula" [--domain museum|landscape] [--limit 18] [--json]
+ *     默认每颗一行「id | 标题 | 作者·年份 | 分辨率 | ❄」；--json 才输出全量 JSON
  *
  *   Step 2 — 串珠成链（支持「画作短ID + 单张串词批注 + Wiki知识切片卡 + 幕间拾句卡」混合叙事流）：
  *     node fable-page.js --curate plan.json
@@ -100,6 +101,57 @@ function requestLocalApi(method, apiPath, bodyObj) {
   });
 }
 
+const PLAN_EXAMPLE = `plan.json 最小示例:
+{
+  "slug": "brass-and-nebula",
+  "title": "把星空折进黄铜里",
+  "note": "开篇导览寄语……",
+  "wiki": "星盘",
+  "pearls": [
+    { "id": "met-live-444854", "caption": "单张旁白……" },
+    { "kind": "wiki", "wiki": "星盘", "title": "知识切片标题", "caption": "为什么看这段——" },
+    "cma-live-111514",
+    { "kind": "quote", "quote": "幕间拾句……", "subtitle": "—— 出处" }
+  ]
+}`;
+
+const USAGE =
+  '用法:\n' +
+  '  1) 探针选品: node fable-page.js --search "astrolabe | Carina Nebula" [--limit 18] [--domain museum|landscape] [--json]\n' +
+  '     默认每颗一行: id | 标题 | 作者·年份 | 分辨率 | ❄(14天冷却中)；--json 输出全量 JSON\n' +
+  '  2) 编排成册: node fable-page.js --curate plan.json\n' +
+  '  3) 快速建页: node fable-page.js --title "主题标题" --ids "met-live-444854,cma-live-..." [--wiki "关联词条"] [--note "寄语"]\n' +
+  '  4) 自动检索: node fable-page.js --title "主题标题" --q "关键词" [--domain museum|landscape]\n' +
+  '  其他: --list 已发布专题 · --history 冷却账本与 ♡ 收藏\n\n' +
+  PLAN_EXAMPLE;
+
+// Commons 标题/wiki 里混进的 Wikidata QuickStatements 残渣：`Foo label QS:Len,"Foo"`、`... title QS:P1…`
+// shortcut: 在 CLI 输出时剥离；根治应在 serve.js 的 Commons 适配器里清（需重启 5184）
+function stripQs(s) {
+  return String(s || '').replace(/\s*(?:\b(?:label|title)\s+)?QS:\S.*$/i, '').trim();
+}
+
+const META_NOISE = /^(?:4K|2K|HD|\d+\s*×\s*\d+|Wikimedia Commons|.*Open Access|NASA.*|iNaturalist.*)$/i;
+const DATE_LIKE = /^(?:ca?\.|circa|before|after|early|mid|late|\d|[一-鿿]*\d)|century|世纪|年/i;
+
+function authorYear(meta) {
+  const segs = String(meta || '').split(/\s*·\s*/).map((s) => s.trim()).filter((s) => s && !META_NOISE.test(s));
+  let author = '';
+  let year = '';
+  if (segs[0] && !DATE_LIKE.test(segs[0])) {
+    author = segs.shift().replace(/^(?:摄影|作者|By)[:：]\s*/i, '').replace(/\s*\(.*$/, '').replace(/[\s-]+$/, '');
+  }
+  const y = segs.find((s) => DATE_LIKE.test(s) && s.length <= 30);
+  if (y) year = y;
+  return [author.slice(0, 32), year].filter(Boolean).join('·');
+}
+
+function pearlLine(p) {
+  const title = stripQs(p.title).slice(0, 60);
+  const res = String(p.res || '').replace(/\s*\(.*\)/, '');
+  return [p.id, title, authorYear(p.meta) || '-', res, p.cooled ? '❄' : ''].filter((x, i) => i < 4 || x).join(' | ');
+}
+
 function readJsonInput(fileArg) {
   const rawStr = fileArg === '-'
     ? fs.readFileSync(0, 'utf8')
@@ -109,6 +161,11 @@ function readJsonInput(fileArg) {
 
 (async () => {
   const args = parseArgs(process.argv);
+
+  if (args.help || args.h || process.argv.length <= 2) {
+    console.log(USAGE);
+    return;
+  }
 
   if (args.list) {
     const res = await requestLocalApi('GET', '/api/pages');
@@ -125,7 +182,7 @@ function readJsonInput(fileArg) {
   if (args.search) {
     const q = typeof args.search === 'string' ? args.search : (args.q || args.keywords || '');
     if (!q) {
-      console.error('用法: node fable-page.js --search "astrolabe | Carina Nebula" [--domain museum|landscape] [--limit 18]');
+      console.error(USAGE);
       process.exit(1);
     }
     const qs = new URLSearchParams({ q });
@@ -134,7 +191,20 @@ function readJsonInput(fileArg) {
     if (args.limit) qs.set('limit', String(args.limit));
     if (args['include-cooled'] || args.includeCooled) qs.set('includeCooled', '1');
     const res = await requestLocalApi('GET', `/api/pearls/search?${qs.toString()}`);
-    console.log(JSON.stringify(res, null, 2));
+    for (const p of (res && res.pearls) || []) {
+      p.title = stripQs(p.title);
+      p.wiki = stripQs(p.wiki);
+    }
+    if (args.json) {
+      console.log(JSON.stringify(res, null, 2));
+      return;
+    }
+    if (!res || !res.ok) {
+      console.error('搜索失败:', (res && res.error) || res);
+      process.exit(1);
+    }
+    console.log(`${res.count} / ${res.vaultTotal}`);
+    for (const p of res.pearls || []) console.log(pearlLine(p));
     return;
   }
 
@@ -173,13 +243,7 @@ function readJsonInput(fileArg) {
 
   const title = args.title || plan.title || args.q || args.keywords || plan.keywords || plan.q;
   if (!title) {
-    console.error(
-      '用法:\n' +
-      '  1) 探针选品: node fable-page.js --search "astrolabe | Carina Nebula" [--limit 18]\n' +
-      '  2) 编排成册: node fable-page.js --curate plan.json\n' +
-      '  3) 快速建页: node fable-page.js --title "主题标题" --ids "met-live-444854,cma-live-..." [--wiki "关联词条"] [--note "寄语"]\n' +
-      '  4) 自动检索: node fable-page.js --title "主题标题" --q "关键词" [--domain museum|landscape]'
-    );
+    console.error(USAGE);
     process.exit(1);
   }
 
